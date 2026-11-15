@@ -48,12 +48,17 @@ apply_kernel_scrub() {
     iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
     iptables -A VIPPROXY_SCRUB -f -j DROP 2>/dev/null || true
     iptables -A VIPPROXY_SCRUB -p udp -j DROP 2>/dev/null || true
+
+    local port
+    for port in "${!used_ports[@]}"; do
+        iptables -A VIPPROXY_SCRUB -p tcp --dport "$port" --syn -m hashlimit --hashlimit-name "vpsyn_${port}" --hashlimit-mode srcip --hashlimit-above 40/sec --hashlimit-burst 80 -j DROP 2>/dev/null || true
+    done
+
     if ! iptables -C INPUT -j VIPPROXY_SCRUB 2>/dev/null; then
         iptables -I INPUT 1 -j VIPPROXY_SCRUB
     fi
 
     iptables -t raw -N VIPPROXY_RAW 2>/dev/null || iptables -t raw -F VIPPROXY_RAW 2>/dev/null || true
-    local port
     for port in "${!used_ports[@]}"; do
         iptables -t raw -A VIPPROXY_RAW -p udp --dport "$port" -j DROP 2>/dev/null || true
     done
@@ -62,27 +67,20 @@ apply_kernel_scrub() {
     fi
 }
 
-remove_kernel_scrub() {
-    while iptables -D INPUT -j VIPPROXY_SCRUB 2>/dev/null; do :; done
-    iptables -F VIPPROXY_SCRUB 2>/dev/null || true
-    iptables -X VIPPROXY_SCRUB 2>/dev/null || true
-
-    while iptables -t raw -D PREROUTING -j VIPPROXY_RAW 2>/dev/null; do :; done
-    iptables -t raw -F VIPPROXY_RAW 2>/dev/null || true
-    iptables -t raw -X VIPPROXY_RAW 2>/dev/null || true
-}
-
-remove_iptables_rules() {
+remove_geo_rules() {
     local port
-    remove_kernel_scrub
     for port in "${!used_ports[@]}"; do
         while iptables -D INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP 2>/dev/null; do :; done
     done
+    ipset destroy "$GEO_SET" 2>/dev/null || true
 }
 
 if [[ "$GEO_ENABLE" != "true" ]]; then
-    remove_iptables_rules
-    ipset destroy "$GEO_SET" 2>/dev/null || true
+    remove_geo_rules
+    apply_kernel_scrub
+    if [[ "$RELOAD_HAPROXY" == "true" ]]; then
+        systemctl reload haproxy 2>/dev/null || true
+    fi
     exit 0
 fi
 

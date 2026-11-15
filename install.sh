@@ -99,9 +99,7 @@ install -o root -g root -m 0755 "$ROOT_DIR/update-geo.sh" /usr/local/sbin/vippro
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.service" /etc/systemd/system/vipproxy-geo.service
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.timer" /etc/systemd/system/vipproxy-geo.timer
 systemctl daemon-reload
-if [[ "$GEO_ENABLE" == "true" ]]; then
-    RELOAD_HAPROXY=false /usr/local/sbin/vipproxy-geo-update
-fi
+RELOAD_HAPROXY=false /usr/local/sbin/vipproxy-geo-update
 GEO_FILE="/etc/vipproxy/geo/$GEO_COUNTRY.zone"
 
 if [[ -f /etc/haproxy/haproxy.cfg ]]; then
@@ -147,8 +145,8 @@ trap 'rm -f "$TMP_CFG"' EXIT
     fi
     printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s),conn_cur'
     printf '%s\n' '    http-request track-sc0 src'
-    printf '%s\n' '    http-request deny deny_status 429 if { sc_http_err_rate(0) gt 40 }'
-    printf '    http-request deny deny_status 429 if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    printf '%s\n' '    http-request silent-drop if { sc_http_err_rate(0) gt 40 }'
+    printf '    http-request silent-drop if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
     printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
     printf '%s\n' '    http-request del-header Proxy'
     printf '%s\n' '    http-request set-header X-Real-IP %[src]'
