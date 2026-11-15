@@ -159,6 +159,24 @@ sudo ufw status verbose
 
 ## Giới hạn thực tế
 
-Bộ này chống bot ở lớp IP, request và kết nối TCP. Nó không thể chặn DDoS volumetric lớn nếu băng thông VPS đã bị làm đầy trước khi gói tin tới máy. Với botnet phân tán hoặc tấn công L3/L4 lớn cần anti-DDoS upstream từ nhà cung cấp VPS, CDN hoặc dịch vụ scrubbing.
+Bộ này chống bot ở lớp IP, request và kết nối TCP. Nó không thể chặn DDoS volumetric lớn nếu băng thông VPS đã bị làm đầy trước khi gói tin tới máy.
+
+### Chịu được 100 Gbps không?
+
+Không. VPS thường chỉ có uplink 100 Mbps - 1 Gbps, tấn công 100 Gbps làm nghẽn đường truyền của nhà cung cấp trước khi gói tin tới kernel, nên mọi cấu hình trong repo này không có tác dụng. Muốn chịu mức đó phải chặn ở upstream:
+
+- Cloudflare (HTTP; TCP game cần Spectrum) hoặc dịch vụ scrubbing/anycast.
+- Anti-DDoS của chính nhà cung cấp VPS (OVH VAC/Game, VNPT, Viettel, Vietnix...).
+- Đặt proxy sau một lớp load balancer có sẵn khả năng hấp thụ lưu lượng.
+
+Phần repo này làm được là giữ CPU, conntrack và socket không sập khi lưu lượng vẫn nằm trong băng thông: drop SYN và cổng lạ ở bảng `raw`, SYNPROXY tuỳ chọn, RPS chia softirq đều cho các core, conntrack 1 triệu entry với 262144 bucket, HAProxy đa luồng.
+
+### SYNPROXY (tuỳ chọn, mặc định tắt)
+
+```env
+SYNPROXY_PORT=80
+```
+
+Kernel tự trả lời bắt tay SYN cho cổng đó nên SYN flood giả nguồn không chiếm được socket của HAProxy. Chỉ bật sau khi đã thử trên máy test: nó đặt `NOTRACK` cho cổng này và cần `net.netfilter.nf_conntrack_tcp_loose=0` mới đúng, sai cấu hình sẽ làm rớt kết nối thật.
 
 Bộ hiện tại hỗ trợ HTTP và TCP. Game chỉ chạy UDP chưa được hỗ trợ. HTTPS chưa bật.

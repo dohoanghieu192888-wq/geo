@@ -26,11 +26,15 @@ valid_port() {
 : "${GAME_MAX_CONN_PER_IP:=20}"
 : "${SYN_RATE_LIMIT:=40}"
 : "${SYN_BURST_LIMIT:=60}"
+: "${SYNPROXY_PORT:=}"
 
 valid_port "$PUBLIC_HTTP_PORT" || fail "Invalid PUBLIC_HTTP_PORT"
 valid_port "$SSH_PORT" || fail "Invalid SSH_PORT"
 [[ "$SYN_RATE_LIMIT" =~ ^[0-9]+$ ]] || fail "Invalid SYN_RATE_LIMIT"
 [[ "$SYN_BURST_LIMIT" =~ ^[0-9]+$ ]] || fail "Invalid SYN_BURST_LIMIT"
+if [[ -n "$SYNPROXY_PORT" ]]; then
+    valid_port "$SYNPROXY_PORT" || fail "Invalid SYNPROXY_PORT"
+fi
 
 declare -A proxy_ports=()
 proxy_ports["$PUBLIC_HTTP_PORT"]=1
@@ -62,6 +66,9 @@ prepare_sets() {
 apply_raw() {
     iptables -t raw -N "$RAW_CHAIN" 2>/dev/null || iptables -t raw -F "$RAW_CHAIN" 2>/dev/null || true
     iptables -t raw -A "$RAW_CHAIN" -i lo -j ACCEPT
+    if [[ -n "$SYNPROXY_PORT" ]]; then
+        iptables -t raw -A "$RAW_CHAIN" -p tcp --dport "$SYNPROXY_PORT" -j CT --notrack
+    fi
     iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m set ! --match-set "$PORTS_SET" dst -j DROP
     iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m hashlimit --hashlimit-name vipproxy_syn --hashlimit-mode srcip --hashlimit-above "${SYN_RATE_LIMIT}/sec" --hashlimit-burst "$SYN_BURST_LIMIT" -j DROP
     iptables -t raw -A "$RAW_CHAIN" -p udp -m multiport --dports "$port_csv" -j DROP
@@ -75,6 +82,10 @@ apply_filter() {
     iptables -A "$SCRUB_CHAIN" -i lo -j ACCEPT
     iptables -A "$SCRUB_CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A "$SCRUB_CHAIN" -m conntrack --ctstate INVALID -j DROP
+    if [[ -n "$SYNPROXY_PORT" ]]; then
+        iptables -A "$SCRUB_CHAIN" -p tcp --dport "$SYNPROXY_PORT" -m conntrack --ctstate INVALID,UNTRACKED -j SYNPROXY --sack-perm --timestamp --wscale 7 --mss 1460 2>/dev/null || true
+        iptables -A "$SCRUB_CHAIN" -p tcp --dport "$SYNPROXY_PORT" -m conntrack --ctstate INVALID -j DROP
+    fi
     iptables -A "$SCRUB_CHAIN" -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
     iptables -A "$SCRUB_CHAIN" -p tcp --tcp-flags ALL NONE -j DROP
     iptables -A "$SCRUB_CHAIN" -p tcp --tcp-flags ALL ALL -j DROP
@@ -92,12 +103,32 @@ apply_filter() {
     iptables -C INPUT -j "$SCRUB_CHAIN" 2>/dev/null || iptables -I INPUT 1 -j "$SCRUB_CHAIN"
 }
 
+apply_rps() {
+    local n mask file
+    n=$(nproc 2>/dev/null || printf '1')
+    if (( n > 8 )); then
+        n=8
+    fi
+    mask=$(printf '%x' $(( (1 << n) - 1 )))
+    while IFS= read -r file; do
+        printf '%s' "$mask" > "$file" 2>/dev/null || true
+    done < <(find /sys/class/net -path '*/queues/rx-*/rps_cpus' 2>/dev/null)
+    while IFS= read -r file; do
+        printf '4096' > "$file" 2>/dev/null || true
+    done < <(find /sys/class/net -path '*/queues/rx-*/rps_flow_cnt' 2>/dev/null)
+    if [[ -w /proc/sys/net/core/rps_sock_flow_entries ]]; then
+        printf '32768' > /proc/sys/net/core/rps_sock_flow_entries 2>/dev/null || true
+    fi
+}
+
 modprobe xt_set 2>/dev/null || true
 modprobe xt_hashlimit 2>/dev/null || true
 modprobe xt_connlimit 2>/dev/null || true
+modprobe nf_conntrack 2>/dev/null || true
 
 prepare_sets
 apply_raw
 apply_filter
+apply_rps
 
 printf '%s\n' 'anti-ddos is applied'

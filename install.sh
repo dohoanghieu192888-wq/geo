@@ -292,6 +292,8 @@ modprobe tcp_bbr 2>/dev/null || true
     printf '%s\n' 'net.ipv4.conf.all.send_redirects=0'
     printf '%s\n' 'net.ipv4.conf.default.send_redirects=0'
     printf '%s\n' 'net.netfilter.nf_conntrack_max=1048576'
+    printf '%s\n' 'net.netfilter.nf_conntrack_buckets=262144'
+    printf '%s\n' 'net.core.rps_sock_flow_entries=32768'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_syn_recv=20'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_established=600'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_time_wait=30'
