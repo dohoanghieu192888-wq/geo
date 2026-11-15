@@ -116,6 +116,8 @@ if ! download_geo; then
         fail "Cannot download or locate geo list for $GEO_COUNTRY"
     fi
 fi
+grep -Eo '^[0-9]+(\.[0-9]+){3}/[0-9]+' "$TMP_GEO" > "${TMP_GEO}.clean" || fail "No valid CIDRs found in geo list"
+mv -f "${TMP_GEO}.clean" "$TMP_GEO"
 
 install -o root -g root -m 0644 "$TMP_GEO" "$GEO_DIR/$GEO_COUNTRY.zone"
 install -o root -g root -m 0644 "$TMP_GEO" "$CHROOT_GEO_DIR/$GEO_COUNTRY.zone"
@@ -124,8 +126,8 @@ ipset create "$GEO_SET" hash:net family inet maxelem 200000 -exist
 ipset create "${GEO_SET}_new" hash:net family inet maxelem 200000 -exist
 ipset flush "${GEO_SET}_new"
 while IFS= read -r cidr; do
-    [[ -z "$cidr" ]] && continue
-    ipset add "${GEO_SET}_new" "$cidr" -exist
+    [[ "$cidr" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || continue
+    ipset add "${GEO_SET}_new" "$cidr" -exist 2>/dev/null || true
 done < "$GEO_DIR/$GEO_COUNTRY.zone"
 ipset swap "${GEO_SET}_new" "$GEO_SET"
 ipset destroy "${GEO_SET}_new"
