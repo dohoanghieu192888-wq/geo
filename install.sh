@@ -245,10 +245,6 @@ systemctl daemon-reload
 
 systemctl enable haproxy
 systemctl restart haproxy
-if [[ "$GEO_ENABLE" == "true" ]]; then
-    systemctl enable --now vipproxy-geo.timer
-else
-    systemctl disable --now vipproxy-geo.timer 2>/dev/null || true
-fi
+systemctl enable --now vipproxy-geo.timer
 systemctl --no-pager --full status haproxy
 printf '%s\n' 'vipproxy is ready'
