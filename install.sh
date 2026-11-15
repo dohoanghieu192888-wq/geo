@@ -113,8 +113,10 @@ install -o root -g root -m 0600 "$CONFIG_FILE" /etc/vipproxy/config.env
 install -o root -g root -m 0755 "$ROOT_DIR/update-geo.sh" /usr/local/sbin/vipproxy-geo-update
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.service" /etc/systemd/system/vipproxy-geo.service
 install -o root -g root -m 0755 "$ROOT_DIR/anti-ddos.sh" /usr/local/sbin/vipproxy-anti-ddos
+install -o root -g root -m 0755 "$ROOT_DIR/watchdog.sh" /usr/local/sbin/vipproxy-watchdog
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.timer" /etc/systemd/system/vipproxy-geo.timer
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-anti-ddos.service" /etc/systemd/system/vipproxy-anti-ddos.service
+install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-watchdog.service" /etc/systemd/system/vipproxy-watchdog.service
 systemctl daemon-reload
 RELOAD_HAPROXY=false /usr/local/sbin/vipproxy-geo-update
 GEO_FILE="/etc/vipproxy/geo/$GEO_COUNTRY.zone"
@@ -326,6 +328,7 @@ systemctl daemon-reload
 systemctl enable haproxy
 systemctl restart haproxy
 systemctl enable vipproxy-anti-ddos.service
+systemctl enable --now vipproxy-watchdog.service
 systemctl enable --now vipproxy-geo.timer
 systemctl --no-pager --full status haproxy
 printf '%s\n' 'vipproxy is ready'

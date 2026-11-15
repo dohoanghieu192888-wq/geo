@@ -179,4 +179,25 @@ SYNPROXY_PORT=80
 
 Kernel tự trả lời bắt tay SYN cho cổng đó nên SYN flood giả nguồn không chiếm được socket của HAProxy. Chỉ bật sau khi đã thử trên máy test: nó đặt `NOTRACK` cho cổng này và cần `net.netfilter.nf_conntrack_tcp_loose=0` mới đúng, sai cấu hình sẽ làm rớt kết nối thật.
 
+### Watchdog và cảnh báo
+
+`watchdog.sh` chạy nền (`vipproxy-watchdog.service`), đọc `/proc/net/dev` mỗi `WATCH_INTERVAL` giây và so với ngưỡng:
+
+```env
+WATCH_INBOUND_MBPS=300
+WATCH_INBOUND_PPS=300000
+WATCH_COOLDOWN=3
+WATCH_WEBHOOK=
+WATCH_MITIGATION_CMD=
+```
+
+Khi vượt ngưỡng, watchdog ghi log, gửi JSON `{"text":"..."}` tới `WATCH_WEBHOOK` (Slack, Discord hoặc endpoint tự viết), chạy `WATCH_MITIGATION_CMD` nếu có, rồi tự kiểm tra: HAProxy chết thì restart, chain `VIPPROXY_SCRUB` mất thì áp lại. Khi `WATCH_COOLDOWN` lần liên tiếp dưới ngưỡng thì báo `normal`.
+
+`WATCH_MITIGATION_CMD` là chỗ nối với upstream: đặt lệnh gọi API nhà cung cấp (bật mitigation, đổi DNS sang IP dự phòng...) — watchdog chỉ gọi khi phát hiện tấn công, không gọi lặp lại mỗi chu kỳ.
+
+```bash
+sudo journalctl -u vipproxy-watchdog -f
+sudo systemctl status vipproxy-watchdog
+```
+
 Bộ hiện tại hỗ trợ HTTP và TCP. Game chỉ chạy UDP chưa được hỗ trợ. HTTPS chưa bật.

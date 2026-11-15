@@ -1,0 +1,13 @@
+[Unit]
+Description=VIPProxy attack watchdog
+After=network-online.target haproxy.service vipproxy-anti-ddos.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/vipproxy-watchdog
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
