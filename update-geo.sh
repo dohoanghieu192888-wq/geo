@@ -39,6 +39,7 @@ done
 
 apply_kernel_scrub() {
     iptables -N VIPPROXY_SCRUB 2>/dev/null || iptables -F VIPPROXY_SCRUB
+    iptables -A VIPPROXY_SCRUB -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A VIPPROXY_SCRUB -m conntrack --ctstate INVALID -j DROP
     iptables -A VIPPROXY_SCRUB -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
     iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags ALL NONE -j DROP
@@ -46,8 +47,18 @@ apply_kernel_scrub() {
     iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
     iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
     iptables -A VIPPROXY_SCRUB -f -j DROP 2>/dev/null || true
+    iptables -A VIPPROXY_SCRUB -p udp -j DROP 2>/dev/null || true
     if ! iptables -C INPUT -j VIPPROXY_SCRUB 2>/dev/null; then
         iptables -I INPUT 1 -j VIPPROXY_SCRUB
+    fi
+
+    iptables -t raw -N VIPPROXY_RAW 2>/dev/null || iptables -t raw -F VIPPROXY_RAW 2>/dev/null || true
+    local port
+    for port in "${!used_ports[@]}"; do
+        iptables -t raw -A VIPPROXY_RAW -p udp --dport "$port" -j DROP 2>/dev/null || true
+    done
+    if ! iptables -t raw -C PREROUTING -j VIPPROXY_RAW 2>/dev/null; then
+        iptables -t raw -I PREROUTING 1 -j VIPPROXY_RAW 2>/dev/null || true
     fi
 }
 
@@ -55,6 +66,10 @@ remove_kernel_scrub() {
     while iptables -D INPUT -j VIPPROXY_SCRUB 2>/dev/null; do :; done
     iptables -F VIPPROXY_SCRUB 2>/dev/null || true
     iptables -X VIPPROXY_SCRUB 2>/dev/null || true
+
+    while iptables -t raw -D PREROUTING -j VIPPROXY_RAW 2>/dev/null; do :; done
+    iptables -t raw -F VIPPROXY_RAW 2>/dev/null || true
+    iptables -t raw -X VIPPROXY_RAW 2>/dev/null || true
 }
 
 remove_iptables_rules() {
