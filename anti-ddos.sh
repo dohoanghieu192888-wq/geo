@@ -59,6 +59,17 @@ prepare_sets() {
     done
 }
 
+apply_raw() {
+    iptables -t raw -N "$RAW_CHAIN" 2>/dev/null || iptables -t raw -F "$RAW_CHAIN" 2>/dev/null || true
+    iptables -t raw -A "$RAW_CHAIN" -i lo -j ACCEPT
+    iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m set ! --match-set "$PORTS_SET" dst -j DROP
+    iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m hashlimit --hashlimit-name vipproxy_syn --hashlimit-mode srcip --hashlimit-above "${SYN_RATE_LIMIT}/sec" --hashlimit-burst "$SYN_BURST_LIMIT" -j DROP
+    iptables -t raw -A "$RAW_CHAIN" -p udp -m multiport --dports "$port_csv" -j DROP
+    if ! iptables -t raw -C PREROUTING -j "$RAW_CHAIN" 2>/dev/null; then
+        iptables -t raw -I PREROUTING 1 -j "$RAW_CHAIN"
+    fi
+}
+
 apply_filter() {
     iptables -N "$SCRUB_CHAIN" 2>/dev/null || iptables -F "$SCRUB_CHAIN"
     iptables -A "$SCRUB_CHAIN" -i lo -j ACCEPT
@@ -77,17 +88,8 @@ apply_filter() {
     iptables -A "$SCRUB_CHAIN" -p icmp -j DROP
     iptables -A "$SCRUB_CHAIN" -p tcp -m set ! --match-set "$PORTS_SET" dst -j DROP
     iptables -A "$SCRUB_CHAIN" -p udp -j DROP
-    iptables -A "$SCRUB_CHAIN" -p tcp --syn -m hashlimit --hashlimit-name vipproxy_syn --hashlimit-mode srcip --hashlimit-above "${SYN_RATE_LIMIT}/sec" --hashlimit-burst "$SYN_BURST_LIMIT" -j DROP
     iptables -A "$SCRUB_CHAIN" -p tcp -m multiport --dports "$port_csv" -m connlimit --connlimit-above "$conn_cap" --connlimit-mask 32 -j DROP
     iptables -C INPUT -j "$SCRUB_CHAIN" 2>/dev/null || iptables -I INPUT 1 -j "$SCRUB_CHAIN"
-}
-
-apply_raw() {
-    iptables -t raw -N "$RAW_CHAIN" 2>/dev/null || iptables -t raw -F "$RAW_CHAIN" 2>/dev/null || true
-    iptables -t raw -A "$RAW_CHAIN" -p udp -m multiport --dports "$port_csv" -j DROP
-    if ! iptables -t raw -C PREROUTING -j "$RAW_CHAIN" 2>/dev/null; then
-        iptables -t raw -I PREROUTING 1 -j "$RAW_CHAIN" 2>/dev/null || true
-    fi
 }
 
 modprobe xt_set 2>/dev/null || true
@@ -95,7 +97,7 @@ modprobe xt_hashlimit 2>/dev/null || true
 modprobe xt_connlimit 2>/dev/null || true
 
 prepare_sets
-apply_filter
 apply_raw
+apply_filter
 
 printf '%s\n' 'anti-ddos is applied'

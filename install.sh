@@ -59,6 +59,7 @@ set +a
 : "${GAME_CONN_RATE_LIMIT:=30}"
 : "${HTTP_MAX_CONN_PER_IP:=80}"
 : "${GAME_MAX_CONN_PER_IP:=20}"
+: "${ALLOWED_HOSTS:=}"
 
 valid_port "$PUBLIC_HTTP_PORT" || fail "Invalid PUBLIC_HTTP_PORT"
 [[ "$PUBLIC_HTTP_PORT" == "80" ]] || fail "PUBLIC_HTTP_PORT must be 80"
@@ -78,6 +79,16 @@ valid_limit "$HTTP_MAX_CONN_PER_IP" || fail "Invalid HTTP_MAX_CONN_PER_IP"
 valid_limit "$GAME_MAX_CONN_PER_IP" || fail "Invalid GAME_MAX_CONN_PER_IP"
 valid_limit "$HTTP_RATE_LIMIT" || fail "Invalid HTTP_RATE_LIMIT"
 valid_limit "$GAME_CONN_RATE_LIMIT" || fail "Invalid GAME_CONN_RATE_LIMIT"
+if [[ -n "$ALLOWED_HOSTS" && ! "$ALLOWED_HOSTS" =~ ^[A-Za-z0-9.*_:,-]+$ ]]; then
+    fail "Invalid ALLOWED_HOSTS"
+fi
+THREADS="$(nproc 2>/dev/null || printf '1')"
+if (( THREADS > 8 )); then
+    THREADS=8
+fi
+if (( THREADS < 1 )); then
+    THREADS=1
+fi
 
 if [[ "$ADMIN_CIDR" != "any" && ! "$ADMIN_CIDR" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(/[0-9]{1,2})?$ ]]; then
     fail "Invalid ADMIN_CIDR"
@@ -119,6 +130,7 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    user haproxy'
     printf '%s\n' '    group haproxy'
     printf '%s\n' '    daemon'
+    printf '    nbthread %s\n' "$THREADS"
     printf '%s\n' '    tune.bufsize 32768'
     printf '%s\n' '    tune.maxrewrite 1024'
     printf '    maxconn %s\n' "$((MAX_HTTP_CONN + MAX_GAME_CONN))"
@@ -131,6 +143,9 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout tunnel 1h'
     printf '%s\n' '    timeout http-request 10s'
     printf '%s\n' '    timeout http-keep-alive 5s'
+    printf '%s\n' '    timeout queue 15s'
+    printf '%s\n' '    option tcp-smart-accept'
+    printf '%s\n' '    option tcp-smart-connect'
     printf '%s\n' 'backend abuse'
     printf '%s\n' '    stick-table type ip size 500k expire 1m store conn_rate(10s),conn_cur'
     printf '%s\n' '    server none 127.0.0.1:1 disabled'
@@ -156,6 +171,11 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    http-request silent-drop if bad_path'
     printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns httpx gobuster dirbuster nmap c2-enum nuclei'
     printf '%s\n' '    http-request silent-drop if bad_scan_bots'
+    printf '%s\n' '    http-request silent-drop if { req.body_size gt 20971520 }'
+    if [[ -n "$ALLOWED_HOSTS" ]]; then
+        printf '    acl allowed_host req.hdr(host),field(1,:) -i %s\n' "${ALLOWED_HOSTS//,/ }"
+        printf '%s\n' '    http-request silent-drop unless allowed_host'
+    fi
     if [[ "$GEO_ENABLE" == "true" ]]; then
         printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
         printf '%s\n' '    http-request deny deny_status 403 unless geo_allowed'
