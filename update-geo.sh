@@ -21,6 +21,7 @@ valid_port() {
 . "$CONFIG_FILE"
 : "${PUBLIC_HTTP_PORT:=80}"
 : "${GAME_RULES:=}"
+: "${SSH_PORT:=22}"
 : "${GEO_ENABLE:=true}"
 : "${GEO_COUNTRY:=vn}"
 [[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
@@ -38,6 +39,8 @@ for rule in "${rules[@]}"; do
 done
 
 apply_kernel_scrub() {
+    modprobe xt_recent 2>/dev/null || true
+    modprobe xt_hashlimit 2>/dev/null || true
     iptables -N VIPPROXY_SCRUB 2>/dev/null || iptables -F VIPPROXY_SCRUB
     iptables -A VIPPROXY_SCRUB -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     iptables -A VIPPROXY_SCRUB -m conntrack --ctstate INVALID -j DROP
@@ -48,6 +51,21 @@ apply_kernel_scrub() {
     iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
     iptables -A VIPPROXY_SCRUB -f -j DROP 2>/dev/null || true
     iptables -A VIPPROXY_SCRUB -p udp -j DROP 2>/dev/null || true
+
+    local trap_ports=()
+    local common_scan_ports=(21 23 25 445 1433 3389 5900 8080 8443 8888 9001)
+    local p
+    for p in "${common_scan_ports[@]}"; do
+        [[ "$p" == "$SSH_PORT" ]] && continue
+        [[ -z "${used_ports[$p]+x}" ]] || continue
+        trap_ports+=("$p")
+    done
+    if [[ ${#trap_ports[@]} -gt 0 ]]; then
+        local trap_ports_csv
+        trap_ports_csv=$(IFS=,; echo "${trap_ports[*]}")
+        iptables -A VIPPROXY_SCRUB -m recent --name SCANNER_TRAP --rcheck --seconds 600 -j DROP 2>/dev/null || true
+        iptables -A VIPPROXY_SCRUB -p tcp -m multiport --dports "$trap_ports_csv" --syn -m recent --name SCANNER_TRAP --set -j DROP 2>/dev/null || true
+    fi
 
     local port
     for port in "${!used_ports[@]}"; do

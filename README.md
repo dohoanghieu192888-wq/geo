@@ -80,19 +80,22 @@ Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ:
    - `tcp_synack_retries=2`, `tcp_fin_timeout=15`, `tcp_tw_reuse=1`: Giải phóng socket nhanh, tái sử dụng cổng, ngăn chặn cạn kiệt tài nguyên mạng.
    - `LimitNOFILE=1048576` cho HAProxy: Ngăn chặn lỗi "Too many open files" khi lượng kết nối tăng vọt.
 
-2. **Tầng 2 - Kernel Packet Scrubbing (iptables & ipset)**:
+2. **Tầng 2 - Kernel Packet Scrubbing & Scan Trap (iptables & ipset)**:
    - Chain `VIPPROXY_SCRUB`: Tự động drop ngay lập tức các gói tin lỗi, quét cổng (TCP NULL, XMAS, SYN-FIN, SYN-RST, fragmented, NEW without SYN).
+   - **Port Scan Trap (`SCANNER_TRAP`)**: Tự động phát hiện botnet/công cụ dò cổng (`c2-enum-toolkit`, `nmap`, `masscan`). Nếu một IP quét vào các cổng chưa mở, IP đó sẽ bị đưa vào danh sách đen và **khóa toàn bộ kết nối trong 10 phút**.
    - `ipset vipproxy_geo`: Lọc IP Việt Nam ở cấp độ kernel với tốc độ tra cứu O(1), drop toàn bộ IP ngoại quốc trước khi gói tin tới HAProxy.
 
 3. **Tầng 3 - HAProxy Layer 4 (Server Game TCP)**:
    - Stick-table 500.000 IP: Theo dõi tốc độ mở kết nối (`conn_rate(10s)`) và số kết nối đồng thời (`conn_cur`).
    - Reject ngay các IP vượt ngưỡng kết nối để chống botnet spam socket game.
 
-4. **Tầng 4 - HAProxy Layer 7 (Website HTTP)**:
-   - Chống Slowloris: Timeout nhận request rút ngắn còn 5s, timeout client-fin 2s.
-   - Chống Bot Scanner: Chặn các công cụ quét tự động (`sqlmap`, `nikto`, `wpscan`, `masscan`, `zgrab`, `censys`, `fwdns`).
-   - Chống Brute-force / Path Flood: Theo dõi `http_err_rate(10s)`, chặn IP nếu tạo ra nhiều lỗi 4xx/5xx liên tục.
-   - Giới hạn request HTTP theo từng IP (`HTTP_RATE_LIMIT`).
+4. **Tầng 4 - HAProxy Layer 7 (Website HTTP & Anti-Reconnaissance)**:
+   - **Xóa sạch Server Banner**: Xóa hoàn toàn các header `Server`, `X-Powered-By`, `X-AspNet-Version` để công cụ dò quét không thể nhận diện phần mềm hay proxy.
+   - **Kiểm soát HTTP Method**: Chỉ cho phép các phương thức chuẩn (`GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `OPTIONS`). Mọi method rác do toolkit quét đều bị `silent-drop` ngay lập tức.
+   - **Bắt buộc Host Header**: Tự động drop các request không có Host header (đặc trưng của botnet quét tự động theo IP).
+   - **Chống Bot Scanner**: Chặn các công cụ quét tự động (`c2-enum`, `nuclei`, `httpx`, `gobuster`, `dirbuster`, `nmap`, `sqlmap`, `nikto`, `wpscan`, `masscan`, `zgrab`, `censys`, `fwdns`).
+   - **Chống Brute-force / Path Flood**: Theo dõi `http_err_rate(10s)`, khóa và ngắt kết nối ngay nếu IP tạo ra trên 15 lỗi (dò tìm file, path không tồn tại).
+   - **Chống Slowloris**: Timeout nhận request rút ngắn còn 5s, timeout client-fin 2s.
 
 ```env
 HTTP_RATE_LIMIT=120

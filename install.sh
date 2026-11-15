@@ -137,17 +137,24 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout http-request 5s'
     printf '%s\n' '    timeout client 20s'
     printf '%s\n' '    timeout client-fin 2s'
-    printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns'
-    printf '%s\n' '    http-request deny deny_status 403 if bad_scan_bots'
+    printf '%s\n' '    acl valid_method method GET HEAD POST PUT DELETE OPTIONS'
+    printf '%s\n' '    http-request silent-drop unless valid_method'
+    printf '%s\n' '    acl has_host hdr_cnt(host) gt 0'
+    printf '%s\n' '    http-request silent-drop unless has_host'
+    printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns httpx gobuster dirbuster nmap c2-enum nuclei'
+    printf '%s\n' '    http-request silent-drop if bad_scan_bots'
     if [[ "$GEO_ENABLE" == "true" ]]; then
         printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
         printf '%s\n' '    http-request deny deny_status 403 unless geo_allowed'
     fi
     printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s),conn_cur'
     printf '%s\n' '    http-request track-sc0 src'
-    printf '%s\n' '    http-request silent-drop if { sc_http_err_rate(0) gt 40 }'
+    printf '%s\n' '    http-request silent-drop if { sc_http_err_rate(0) gt 15 }'
     printf '    http-request silent-drop if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
     printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
+    printf '%s\n' '    http-response del-header Server'
+    printf '%s\n' '    http-response del-header X-Powered-By'
+    printf '%s\n' '    http-response del-header X-AspNet-Version'
     printf '%s\n' '    http-request del-header Proxy'
     printf '%s\n' '    http-request set-header X-Real-IP %[src]'
     printf '%s\n' '    http-request set-header X-Forwarded-For %[src]'
