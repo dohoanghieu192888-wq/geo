@@ -20,7 +20,7 @@ valid_port() {
 }
 
 valid_limit() {
-    [[ "$1" =~ ^[0-9]{1,7}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 1000000 ))
+    [[ "$1" =~ ^[0-9]{1,7}$ ]] && (( 10#$1 <= 1000000 ))
 }
 
 valid_cidr() {
@@ -64,7 +64,7 @@ ask_limit() {
     while true; do
         ask_value "$label" "$default"
         valid_limit "$REPLY" && return 0
-        echo "Gia tri phai la so tu 1 den 1000000."
+        echo "Gia tri phai la so tu 0 den 1000000 (0 = khong gioi han theo IP)."
     done
 }
 
@@ -130,13 +130,13 @@ done
 
 ask_yes_no "Chi cho IP Viet Nam truy cap web/game?" y
 if [[ "$REPLY" =~ ^[yY]$ ]]; then geo_enable=true; else geo_enable=false; fi
-ask_limit "So request web/IP trong 10 giay" 120
+ask_limit "So request web/IP trong 10 giay (0 = khong gioi han)" 0
 http_rate="$REPLY"
-ask_limit "So ket noi moi game/IP trong 10 giay" 30
+ask_limit "So ket noi moi game/IP trong 10 giay (0 = khong gioi han)" 0
 game_rate="$REPLY"
-ask_limit "So ket noi web dong thoi/IP" 80
+ask_limit "So ket noi web dong thoi/IP (0 = khong gioi han)" 0
 http_max_conn="$REPLY"
-ask_limit "So ket noi game dong thoi/IP" 20
+ask_limit "So ket noi game dong thoi/IP (0 = khong gioi han)" 0
 game_max_conn="$REPLY"
 
 echo ""

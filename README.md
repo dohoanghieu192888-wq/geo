@@ -86,13 +86,13 @@ Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ. Lớp k
 2. **Tầng 2 - Kernel Anti-Scan (`anti-ddos.sh`)**:
    - Chain `VIPPROXY_SCRUB`: drop gói tin lỗi và dấu hiệu quét cổng (TCP NULL, XMAS, SYN-FIN, SYN-RST, fragmented, NEW without SYN), giới hạn ICMP echo 10 gói/giây.
    - `ipset vipproxy_ports`: whitelist cổng hợp lệ (web, game, SSH). Mọi gói TCP tới cổng khác bị drop ngay, scanner không nhận được phản hồi nào.
-   - SYN flood và quét cổng bị drop ngay ở bảng `raw` trước conntrack: hashlimit **40 gói SYN/giây mỗi IP** (burst 60), SYN tới cổng không có trong whitelist bị hủy trước khi tốn một entry conntrack.
-   - `connlimit` chặn IP giữ quá nhiều kết nối đồng thời tới cổng proxy.
+   - SYN flood và quét cổng bị drop ngay ở bảng `raw` trước conntrack: SYN tới cổng không có trong whitelist bị hủy trước khi tốn một entry conntrack; hashlimit SYN theo IP bật khi `SYN_RATE_LIMIT` > 0.
+   - `connlimit` chặn IP giữ quá nhiều kết nối đồng thời tới cổng proxy, tắt khi hai biến `*_MAX_CONN_PER_IP` bằng `0`.
    - `ipset vipproxy_geo`: Lọc IP Việt Nam ở cấp độ kernel với tốc độ tra cứu O(1), drop toàn bộ IP ngoại quốc trước khi gói tin tới HAProxy.
 
 3. **Tầng 3 - HAProxy Layer 4 (Web + Game TCP)**:
-   - Stick-table 500.000 IP cho từng frontend: theo dõi `conn_rate(10s)` và `conn_cur` theo IP.
-   - Bảng `abuse` dùng chung cho web và game: tổng kết nối của một IP trên **mọi** cổng bị chặn, nên flood game cũng không mở thêm được kết nối web.
+   - Stick-table 500.000 IP cho từng frontend: theo dõi `conn_rate(10s)`, `conn_cur` và tỉ lệ lỗi theo IP.
+   - Bảng `abuse` dùng chung cho web và game: tổng kết nối của một IP trên **mọi** cổng bị chặn, nên flood game cũng không mở thêm được kết nối web. Toàn bộ phần giới hạn theo IP tự tắt khi các biến tương ứng bằng `0`.
    - `nbthread` bằng số CPU (tối đa 8), `tcp-smart-accept`/`tcp-smart-connect` và `timeout queue 15s`: xử lý nhiều kết nối hơn, ít syscall hơn, request vào hàng đợi quá lâu bị trả lỗi thay vì treo.
 
 4. **Tầng 4 - HAProxy Layer 7 (Website HTTP & Anti-Reconnaissance)**:
@@ -108,20 +108,20 @@ Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ. Lớp k
    - **Host whitelist (tuỳ chọn)**: đặt `ALLOWED_HOSTS=example.com,www.example.com` thì request mang Host khác bị drop thẳng.
 
 ```env
-HTTP_RATE_LIMIT=120
-GAME_CONN_RATE_LIMIT=30
-HTTP_MAX_CONN_PER_IP=80
-GAME_MAX_CONN_PER_IP=20
+HTTP_RATE_LIMIT=0
+GAME_CONN_RATE_LIMIT=0
+HTTP_MAX_CONN_PER_IP=0
+GAME_MAX_CONN_PER_IP=0
 MAX_HTTP_CONN=4000
 MAX_GAME_CONN=20000
-SYN_RATE_LIMIT=40
+SYN_RATE_LIMIT=0
 SYN_BURST_LIMIT=60
 ALLOWED_HOSTS=
 ```
 
-`HTTP_RATE_LIMIT` là số request mỗi IP trong 10 giây. `GAME_CONN_RATE_LIMIT` là số kết nối TCP mỗi IP trong 10 giây. Các giới hạn này kết hợp với geo-filter, ipset, UFW, syncookies, TCP backlog và giới hạn kết nối HAProxy.
+`HTTP_RATE_LIMIT` là số request mỗi IP trong 10 giây. `GAME_CONN_RATE_LIMIT` là số kết nối TCP mỗi IP trong 10 giây. Giá trị **`0` = tắt giới hạn theo IP** — cần khi nhiều người dùng chung một IP public (quán net, CGNAT 4G). Các lớp khác vẫn bật: geo-filter, whitelist cổng ở kernel, syncookies, TCP backlog, chặn method/Host/path/UA.
 
-`HTTP_MAX_CONN_PER_IP` giới hạn kết nối HTTP đồng thời của một IP. `GAME_MAX_CONN_PER_IP` giới hạn kết nối game đồng thời của một IP. `SYN_RATE_LIMIT` là số gói SYN mỗi giây của một IP ở tầng kernel, burst là `SYN_BURST_LIMIT`; vượt ngưỡng chỉ drop gói, không ban IP.
+`HTTP_MAX_CONN_PER_IP` giới hạn kết nối HTTP đồng thời của một IP. `GAME_MAX_CONN_PER_IP` giới hạn kết nối game đồng thời của một IP. `SYN_RATE_LIMIT` là số gói SYN mỗi giây của một IP ở tầng kernel, burst là `SYN_BURST_LIMIT`; vượt ngưỡng chỉ drop gói, không ban IP. Cả bốn biến này mặc định `0` (không giới hạn theo IP).
 
 Khi đổi cấu hình, chạy lại:
 

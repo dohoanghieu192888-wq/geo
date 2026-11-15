@@ -18,6 +18,10 @@ valid_limit() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 ))
 }
 
+valid_limit0() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 1000000 ))
+}
+
 valid_ipv4() {
     local ip="$1"
     local part
@@ -55,10 +59,10 @@ set +a
 : "${MAX_GAME_CONN:=20000}"
 : "${GEO_ENABLE:=true}"
 : "${GEO_COUNTRY:=vn}"
-: "${HTTP_RATE_LIMIT:=120}"
-: "${GAME_CONN_RATE_LIMIT:=30}"
-: "${HTTP_MAX_CONN_PER_IP:=80}"
-: "${GAME_MAX_CONN_PER_IP:=20}"
+: "${HTTP_RATE_LIMIT:=0}"
+: "${GAME_CONN_RATE_LIMIT:=0}"
+: "${HTTP_MAX_CONN_PER_IP:=0}"
+: "${GAME_MAX_CONN_PER_IP:=0}"
 : "${ALLOWED_HOSTS:=}"
 
 valid_port "$PUBLIC_HTTP_PORT" || fail "Invalid PUBLIC_HTTP_PORT"
@@ -75,10 +79,10 @@ valid_limit "$MAX_HTTP_CONN" || fail "Invalid MAX_HTTP_CONN"
 [[ "$GEO_ENABLE" == "true" || "$GEO_ENABLE" == "false" ]] || fail "Invalid GEO_ENABLE"
 [[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
 valid_limit "$MAX_GAME_CONN" || fail "Invalid MAX_GAME_CONN"
-valid_limit "$HTTP_MAX_CONN_PER_IP" || fail "Invalid HTTP_MAX_CONN_PER_IP"
-valid_limit "$GAME_MAX_CONN_PER_IP" || fail "Invalid GAME_MAX_CONN_PER_IP"
-valid_limit "$HTTP_RATE_LIMIT" || fail "Invalid HTTP_RATE_LIMIT"
-valid_limit "$GAME_CONN_RATE_LIMIT" || fail "Invalid GAME_CONN_RATE_LIMIT"
+valid_limit0 "$HTTP_MAX_CONN_PER_IP" || fail "Invalid HTTP_MAX_CONN_PER_IP"
+valid_limit0 "$GAME_MAX_CONN_PER_IP" || fail "Invalid GAME_MAX_CONN_PER_IP"
+valid_limit0 "$HTTP_RATE_LIMIT" || fail "Invalid HTTP_RATE_LIMIT"
+valid_limit0 "$GAME_CONN_RATE_LIMIT" || fail "Invalid GAME_CONN_RATE_LIMIT"
 if [[ -n "$ALLOWED_HOSTS" && ! "$ALLOWED_HOSTS" =~ ^[A-Za-z0-9.*_:,-]+$ ]]; then
     fail "Invalid ALLOWED_HOSTS"
 fi
@@ -158,8 +162,10 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout client 20s'
     printf '%s\n' '    timeout client-fin 2s'
     printf '%s\n' '    option http-buffer-request'
-    printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
-    printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    if (( HTTP_MAX_CONN_PER_IP > 0 )); then
+        printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
+        printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    fi
     printf '%s\n' '    acl valid_method method GET HEAD POST PUT DELETE OPTIONS'
     printf '%s\n' '    http-request silent-drop unless valid_method'
     printf '%s\n' '    acl has_host hdr_cnt(host) gt 0'
@@ -183,8 +189,12 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s),conn_cur'
     printf '%s\n' '    http-request track-sc0 src'
     printf '%s\n' '    http-request silent-drop if { sc_http_err_rate(0) gt 15 }'
-    printf '    http-request silent-drop if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
-    printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
+    if (( HTTP_MAX_CONN_PER_IP > 0 )); then
+        printf '    http-request silent-drop if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    fi
+    if (( HTTP_RATE_LIMIT > 0 )); then
+        printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
+    fi
     printf '%s\n' '    http-response del-header Server'
     printf '%s\n' '    http-response del-header X-Powered-By'
     printf '%s\n' '    http-response del-header X-AspNet-Version'
@@ -219,10 +229,14 @@ trap 'rm -f "$TMP_CFG"' EXIT
         fi
         printf '%s\n' '    stick-table type ip size 500k expire 10m store conn_rate(10s),conn_cur'
         printf '%s\n' '    tcp-request connection track-sc0 src'
-        printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
-        printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
-        printf '    tcp-request connection reject if { sc_conn_cur(0) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
-        printf '    tcp-request connection reject if { sc_conn_rate(0) gt %s }\n' "$GAME_CONN_RATE_LIMIT"
+        if (( GAME_MAX_CONN_PER_IP > 0 )); then
+            printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
+            printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
+            printf '    tcp-request connection reject if { sc_conn_cur(0) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
+        fi
+        if (( GAME_CONN_RATE_LIMIT > 0 )); then
+            printf '    tcp-request connection reject if { sc_conn_rate(0) gt %s }\n' "$GAME_CONN_RATE_LIMIT"
+        fi
         printf '    maxconn %s\n' "$MAX_GAME_CONN"
         printf '    default_backend game_backend_%s\n' "$public_port"
         printf 'backend game_backend_%s\n' "$public_port"

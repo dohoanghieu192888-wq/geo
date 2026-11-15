@@ -22,9 +22,9 @@ valid_port() {
 : "${PUBLIC_HTTP_PORT:=80}"
 : "${GAME_RULES:=}"
 : "${SSH_PORT:=22}"
-: "${HTTP_MAX_CONN_PER_IP:=80}"
-: "${GAME_MAX_CONN_PER_IP:=20}"
-: "${SYN_RATE_LIMIT:=40}"
+: "${HTTP_MAX_CONN_PER_IP:=0}"
+: "${GAME_MAX_CONN_PER_IP:=0}"
+: "${SYN_RATE_LIMIT:=0}"
 : "${SYN_BURST_LIMIT:=60}"
 : "${SYNPROXY_PORT:=}"
 
@@ -70,7 +70,9 @@ apply_raw() {
         iptables -t raw -A "$RAW_CHAIN" -p tcp --dport "$SYNPROXY_PORT" -j CT --notrack
     fi
     iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m set ! --match-set "$PORTS_SET" dst -j DROP
-    iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m hashlimit --hashlimit-name vipproxy_syn --hashlimit-mode srcip --hashlimit-above "${SYN_RATE_LIMIT}/sec" --hashlimit-burst "$SYN_BURST_LIMIT" -j DROP
+    if (( SYN_RATE_LIMIT > 0 )); then
+        iptables -t raw -A "$RAW_CHAIN" -p tcp --syn -m hashlimit --hashlimit-name vipproxy_syn --hashlimit-mode srcip --hashlimit-above "${SYN_RATE_LIMIT}/sec" --hashlimit-burst "$SYN_BURST_LIMIT" -j DROP
+    fi
     iptables -t raw -A "$RAW_CHAIN" -p udp -m multiport --dports "$port_csv" -j DROP
     if ! iptables -t raw -C PREROUTING -j "$RAW_CHAIN" 2>/dev/null; then
         iptables -t raw -I PREROUTING 1 -j "$RAW_CHAIN"
@@ -99,7 +101,9 @@ apply_filter() {
     iptables -A "$SCRUB_CHAIN" -p icmp -j DROP
     iptables -A "$SCRUB_CHAIN" -p tcp -m set ! --match-set "$PORTS_SET" dst -j DROP
     iptables -A "$SCRUB_CHAIN" -p udp -j DROP
-    iptables -A "$SCRUB_CHAIN" -p tcp -m multiport --dports "$port_csv" -m connlimit --connlimit-above "$conn_cap" --connlimit-mask 32 -j DROP
+    if (( conn_cap > 0 )); then
+        iptables -A "$SCRUB_CHAIN" -p tcp -m multiport --dports "$port_csv" -m connlimit --connlimit-above "$conn_cap" --connlimit-mask 32 -j DROP
+    fi
     iptables -C INPUT -j "$SCRUB_CHAIN" 2>/dev/null || iptables -I INPUT 1 -j "$SCRUB_CHAIN"
 }
 
