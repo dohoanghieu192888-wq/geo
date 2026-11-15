@@ -114,6 +114,8 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    user haproxy'
     printf '%s\n' '    group haproxy'
     printf '%s\n' '    daemon'
+    printf '%s\n' '    tune.bufsize 32768'
+    printf '%s\n' '    tune.maxrewrite 1024'
     printf '    maxconn %s\n' "$((MAX_HTTP_CONN + MAX_GAME_CONN))"
     printf '%s\n' 'defaults'
     printf '%s\n' '    log global'
@@ -129,15 +131,18 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    mode http'
     printf '%s\n' '    option httplog'
     printf '    maxconn %s\n' "$MAX_HTTP_CONN"
-    printf '%s\n' '    timeout http-request 10s'
-    printf '%s\n' '    timeout client 30s'
-    printf '%s\n' '    timeout client-fin 5s'
+    printf '%s\n' '    timeout http-request 5s'
+    printf '%s\n' '    timeout client 20s'
+    printf '%s\n' '    timeout client-fin 2s'
+    printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns'
+    printf '%s\n' '    http-request deny deny_status 403 if bad_scan_bots'
     if [[ "$GEO_ENABLE" == "true" ]]; then
         printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
         printf '%s\n' '    http-request deny deny_status 403 unless geo_allowed'
     fi
-    printf '%s\n' '    stick-table type ip size 200k expire 10m store http_req_rate(10s),conn_cur'
+    printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s),conn_cur'
     printf '%s\n' '    http-request track-sc0 src'
+    printf '%s\n' '    http-request deny deny_status 429 if { sc_http_err_rate(0) gt 40 }'
     printf '    http-request deny deny_status 429 if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
     printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
     printf '%s\n' '    http-request del-header Proxy'
@@ -169,7 +174,7 @@ trap 'rm -f "$TMP_CFG"' EXIT
             printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
             printf '%s\n' '    tcp-request connection reject unless geo_allowed'
         fi
-        printf '%s\n' '    stick-table type ip size 200k expire 10m store conn_rate(10s),conn_cur'
+        printf '%s\n' '    stick-table type ip size 500k expire 10m store conn_rate(10s),conn_cur'
         printf '%s\n' '    tcp-request connection track-sc0 src'
         printf '    tcp-request connection reject if { sc_conn_cur(0) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
         printf '    tcp-request connection reject if { sc_conn_rate(0) gt %s }\n' "$GAME_CONN_RATE_LIMIT"
@@ -203,14 +208,37 @@ if [[ "$UFW_ENABLE" == "true" ]]; then
     ufw --force enable
 fi
 {
+    printf '%s\n' 'fs.file-max=2097152'
+    printf '%s\n' 'net.core.somaxconn=65535'
+    printf '%s\n' 'net.core.netdev_max_backlog=65535'
+    printf '%s\n' 'net.ipv4.tcp_max_syn_backlog=65535'
     printf '%s\n' 'net.ipv4.tcp_syncookies=1'
-    printf '%s\n' 'net.ipv4.tcp_max_syn_backlog=8192'
-    printf '%s\n' 'net.core.somaxconn=8192'
+    printf '%s\n' 'net.ipv4.tcp_synack_retries=2'
+    printf '%s\n' 'net.ipv4.tcp_syn_retries=2'
+    printf '%s\n' 'net.ipv4.tcp_fin_timeout=15'
+    printf '%s\n' 'net.ipv4.tcp_tw_reuse=1'
+    printf '%s\n' 'net.ipv4.tcp_max_tw_buckets=1440000'
+    printf '%s\n' 'net.ipv4.tcp_rfc1337=1'
+    printf '%s\n' 'net.ipv4.tcp_slow_start_after_idle=0'
     printf '%s\n' 'net.ipv4.icmp_echo_ignore_broadcasts=1'
+    printf '%s\n' 'net.ipv4.icmp_ignore_bogus_error_responses=1'
     printf '%s\n' 'net.ipv4.conf.all.rp_filter=1'
     printf '%s\n' 'net.ipv4.conf.default.rp_filter=1'
+    printf '%s\n' 'net.ipv4.conf.all.accept_source_route=0'
+    printf '%s\n' 'net.ipv4.conf.default.accept_source_route=0'
+    printf '%s\n' 'net.ipv4.conf.all.accept_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.default.accept_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.all.send_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.default.send_redirects=0'
 } > /etc/sysctl.d/99-vipproxy.conf
-sysctl --system >/dev/null
+sysctl --system >/dev/null 2>&1 || true
+
+install -d -m 0755 /etc/systemd/system/haproxy.service.d
+{
+    printf '%s\n' '[Service]'
+    printf '%s\n' 'LimitNOFILE=1048576'
+} > /etc/systemd/system/haproxy.service.d/limits.conf
+systemctl daemon-reload
 
 systemctl enable haproxy
 systemctl restart haproxy

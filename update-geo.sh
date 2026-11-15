@@ -36,12 +36,31 @@ for rule in "${rules[@]}"; do
     used_ports["$public_port"]=1
 done
 
+apply_kernel_scrub() {
+    iptables -N VIPPROXY_SCRUB 2>/dev/null || iptables -F VIPPROXY_SCRUB
+    iptables -A VIPPROXY_SCRUB -m conntrack --ctstate INVALID -j DROP
+    iptables -A VIPPROXY_SCRUB -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
+    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags ALL NONE -j DROP
+    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags ALL ALL -j DROP
+    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
+    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
+    iptables -A VIPPROXY_SCRUB -f -j DROP 2>/dev/null || true
+    if ! iptables -C INPUT -j VIPPROXY_SCRUB 2>/dev/null; then
+        iptables -I INPUT 1 -j VIPPROXY_SCRUB
+    fi
+}
+
+remove_kernel_scrub() {
+    while iptables -D INPUT -j VIPPROXY_SCRUB 2>/dev/null; do :; done
+    iptables -F VIPPROXY_SCRUB 2>/dev/null || true
+    iptables -X VIPPROXY_SCRUB 2>/dev/null || true
+}
+
 remove_iptables_rules() {
     local port
+    remove_kernel_scrub
     for port in "${!used_ports[@]}"; do
-        while iptables -C INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP 2>/dev/null; do
-            iptables -D INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP
-        done
+        while iptables -D INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP 2>/dev/null; do :; done
     done
 }
 
@@ -76,6 +95,7 @@ for port in "${!used_ports[@]}"; do
         iptables -I INPUT 1 -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP
     fi
 done
+apply_kernel_scrub
 
 if [[ "$RELOAD_HAPROXY" == "true" ]]; then
     systemctl reload haproxy

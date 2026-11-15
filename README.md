@@ -71,7 +71,28 @@ Tắt geo-filter:
 GEO_ENABLE=false
 ```
 
-## Chống bot và DDoS cơ bản
+## Chống bot và DDoS nâng cao (4 tầng bảo vệ)
+
+Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ:
+
+1. **Tầng 1 - Kernel Linux (sysctl)**:
+   - `tcp_syncookies=1`, `tcp_max_syn_backlog=65535`, `somaxconn=65535`, `netdev_max_backlog=65535`: Chống tê liệt hàng đợi kết nối khi bị SYN flood.
+   - `tcp_synack_retries=2`, `tcp_fin_timeout=15`, `tcp_tw_reuse=1`: Giải phóng socket nhanh, tái sử dụng cổng, ngăn chặn cạn kiệt tài nguyên mạng.
+   - `LimitNOFILE=1048576` cho HAProxy: Ngăn chặn lỗi "Too many open files" khi lượng kết nối tăng vọt.
+
+2. **Tầng 2 - Kernel Packet Scrubbing (iptables & ipset)**:
+   - Chain `VIPPROXY_SCRUB`: Tự động drop ngay lập tức các gói tin lỗi, quét cổng (TCP NULL, XMAS, SYN-FIN, SYN-RST, fragmented, NEW without SYN).
+   - `ipset vipproxy_geo`: Lọc IP Việt Nam ở cấp độ kernel với tốc độ tra cứu O(1), drop toàn bộ IP ngoại quốc trước khi gói tin tới HAProxy.
+
+3. **Tầng 3 - HAProxy Layer 4 (Server Game TCP)**:
+   - Stick-table 500.000 IP: Theo dõi tốc độ mở kết nối (`conn_rate(10s)`) và số kết nối đồng thời (`conn_cur`).
+   - Reject ngay các IP vượt ngưỡng kết nối để chống botnet spam socket game.
+
+4. **Tầng 4 - HAProxy Layer 7 (Website HTTP)**:
+   - Chống Slowloris: Timeout nhận request rút ngắn còn 5s, timeout client-fin 2s.
+   - Chống Bot Scanner: Chặn các công cụ quét tự động (`sqlmap`, `nikto`, `wpscan`, `masscan`, `zgrab`, `censys`, `fwdns`).
+   - Chống Brute-force / Path Flood: Theo dõi `http_err_rate(10s)`, chặn IP nếu tạo ra nhiều lỗi 4xx/5xx liên tục.
+   - Giới hạn request HTTP theo từng IP (`HTTP_RATE_LIMIT`).
 
 ```env
 HTTP_RATE_LIMIT=120
