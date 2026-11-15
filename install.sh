@@ -148,7 +148,6 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' 'backend web_backend'
     printf '%s\n' '    mode http'
     printf '%s\n' '    option httpchk'
-    printf '%s\n' '    http-check connect'
     printf '    server web1 %s:%s check\n' "$WEB_BACKEND_IP" "$WEB_BACKEND_PORT"
 
     declare -A used_ports=(["$PUBLIC_HTTP_PORT"]=1)
@@ -179,8 +178,6 @@ trap 'rm -f "$TMP_CFG"' EXIT
         printf 'backend game_backend_%s\n' "$public_port"
         printf '%s\n' '    mode tcp'
         printf '%s\n' '    option tcp-check'
-        printf '%s\n' '    timeout client 1h'
-        printf '%s\n' '    timeout server 1h'
         printf '    server game1 %s:%s check\n' "$backend_ip" "$backend_port"
     done
 } > "$TMP_CFG"
