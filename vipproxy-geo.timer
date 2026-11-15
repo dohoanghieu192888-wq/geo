@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh VIPProxy geo allowlist
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

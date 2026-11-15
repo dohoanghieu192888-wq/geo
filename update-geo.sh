@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+CONFIG_FILE=/etc/vipproxy/config.env
+GEO_DIR=/etc/vipproxy/geo
+CHROOT_GEO_DIR=/var/lib/haproxy/etc/vipproxy/geo
+GEO_SET=vipproxy_geo
+RELOAD_HAPROXY="${RELOAD_HAPROXY:-true}"
+
+fail() {
+    printf '%s\n' "$1" >&2
+    exit 1
+}
+
+valid_port() {
+    [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 && 10#$1 <= 65535 ))
+}
+
+[[ -f "$CONFIG_FILE" ]] || fail "Missing config: $CONFIG_FILE"
+. "$CONFIG_FILE"
+: "${PUBLIC_HTTP_PORT:=80}"
+: "${GAME_RULES:=}"
+: "${GEO_ENABLE:=true}"
+: "${GEO_COUNTRY:=vn}"
+[[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
+valid_port "$PUBLIC_HTTP_PORT" || fail "Invalid PUBLIC_HTTP_PORT"
+
+declare -A used_ports=()
+used_ports["$PUBLIC_HTTP_PORT"]=1
+IFS=',' read -r -a rules <<< "$GAME_RULES"
+for rule in "${rules[@]}"; do
+    [[ -z "$rule" ]] && continue
+    IFS=':' read -r public_port _ _ extra <<< "$rule"
+    [[ -z "${extra:-}" ]] || fail "Invalid GAME_RULES entry: $rule"
+    valid_port "${public_port:-}" || fail "Invalid game public port: $rule"
+    used_ports["$public_port"]=1
+done
+
+remove_iptables_rules() {
+    local port
+    for port in "${!used_ports[@]}"; do
+        while iptables -C INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP 2>/dev/null; do
+            iptables -D INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP
+        done
+    done
+}
+
+if [[ "$GEO_ENABLE" != "true" ]]; then
+    remove_iptables_rules
+    ipset destroy "$GEO_SET" 2>/dev/null || true
+    exit 0
+fi
+
+install -d -m 0755 "$GEO_DIR"
+install -d -m 0755 "$CHROOT_GEO_DIR"
+TMP_GEO="$(mktemp)"
+trap 'rm -f "$TMP_GEO"' EXIT
+URL="https://www.ipdeny.com/ipblocks/data/countries/${GEO_COUNTRY}.zone"
+curl --fail --silent --show-error --location --max-time 45 "$URL" -o "$TMP_GEO"
+grep -Eq '^[0-9]+(\.[0-9]+){3}/[0-9]+$' "$TMP_GEO" || fail "Invalid geo list"
+install -o root -g root -m 0644 "$TMP_GEO" "$GEO_DIR/$GEO_COUNTRY.zone"
+install -o root -g root -m 0644 "$TMP_GEO" "$CHROOT_GEO_DIR/$GEO_COUNTRY.zone"
+
+ipset create "$GEO_SET" hash:net family inet maxelem 200000 -exist
+ipset create "${GEO_SET}_new" hash:net family inet maxelem 200000 -exist
+ipset flush "${GEO_SET}_new"
+while IFS= read -r cidr; do
+    [[ -z "$cidr" ]] && continue
+    ipset add "${GEO_SET}_new" "$cidr" -exist
+done < "$GEO_DIR/$GEO_COUNTRY.zone"
+ipset swap "${GEO_SET}_new" "$GEO_SET"
+ipset destroy "${GEO_SET}_new"
+
+for port in "${!used_ports[@]}"; do
+    if ! iptables -C INPUT -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP 2>/dev/null; then
+        iptables -I INPUT 1 -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP
+    fi
+done
+
+if [[ "$RELOAD_HAPROXY" == "true" ]]; then
+    systemctl reload haproxy
+fi
