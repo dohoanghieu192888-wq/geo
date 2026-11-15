@@ -97,7 +97,9 @@ fi
 install -o root -g root -m 0600 "$CONFIG_FILE" /etc/vipproxy/config.env
 install -o root -g root -m 0755 "$ROOT_DIR/update-geo.sh" /usr/local/sbin/vipproxy-geo-update
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.service" /etc/systemd/system/vipproxy-geo.service
+install -o root -g root -m 0755 "$ROOT_DIR/anti-ddos.sh" /usr/local/sbin/vipproxy-anti-ddos
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.timer" /etc/systemd/system/vipproxy-geo.timer
+install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-anti-ddos.service" /etc/systemd/system/vipproxy-anti-ddos.service
 systemctl daemon-reload
 RELOAD_HAPROXY=false /usr/local/sbin/vipproxy-geo-update
 GEO_FILE="/etc/vipproxy/geo/$GEO_COUNTRY.zone"
@@ -129,6 +131,9 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout tunnel 1h'
     printf '%s\n' '    timeout http-request 10s'
     printf '%s\n' '    timeout http-keep-alive 5s'
+    printf '%s\n' 'backend abuse'
+    printf '%s\n' '    stick-table type ip size 500k expire 1m store conn_rate(10s),conn_cur'
+    printf '%s\n' '    server none 127.0.0.1:1 disabled'
     printf '%s\n' 'frontend web_in'
     printf '    bind *:%s\n' "$PUBLIC_HTTP_PORT"
     printf '%s\n' '    mode http'
@@ -137,10 +142,18 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout http-request 5s'
     printf '%s\n' '    timeout client 20s'
     printf '%s\n' '    timeout client-fin 2s'
+    printf '%s\n' '    option http-buffer-request'
+    printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
+    printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
     printf '%s\n' '    acl valid_method method GET HEAD POST PUT DELETE OPTIONS'
     printf '%s\n' '    http-request silent-drop unless valid_method'
     printf '%s\n' '    acl has_host hdr_cnt(host) gt 0'
     printf '%s\n' '    http-request silent-drop unless has_host'
+    printf '%s\n' '    http-request silent-drop if { req.hdr_cnt(host) gt 1 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr(user-agent) -m len gt 512 }'
+    printf '%s\n' '    http-request silent-drop if { path -m len gt 1024 }'
+    printf '%s\n' '    acl bad_path path_beg -i /.env /.git /.svn /.hg /.aws /.ssh /.kube /wp-login.php /wp-admin /xmlrpc.php /phpmyadmin /pma /myadmin /cgi-bin /actuator /solr /jenkins /manager/html /server-status /server-info /etc/passwd /proc/self /boaform /GponForm /setup.cgi /SDK/webLanguage'
+    printf '%s\n' '    http-request silent-drop if bad_path'
     printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns httpx gobuster dirbuster nmap c2-enum nuclei'
     printf '%s\n' '    http-request silent-drop if bad_scan_bots'
     if [[ "$GEO_ENABLE" == "true" ]]; then
@@ -186,6 +199,8 @@ trap 'rm -f "$TMP_CFG"' EXIT
         fi
         printf '%s\n' '    stick-table type ip size 500k expire 10m store conn_rate(10s),conn_cur'
         printf '%s\n' '    tcp-request connection track-sc0 src'
+        printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
+        printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
         printf '    tcp-request connection reject if { sc_conn_cur(0) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
         printf '    tcp-request connection reject if { sc_conn_rate(0) gt %s }\n' "$GAME_CONN_RATE_LIMIT"
         printf '    maxconn %s\n' "$MAX_GAME_CONN"
@@ -204,7 +219,7 @@ if [[ "$UFW_ENABLE" == "true" ]]; then
     ufw --force default deny incoming
     ufw --force default allow outgoing
     if [[ "$ADMIN_CIDR" == "any" ]]; then
-        ufw allow "$SSH_PORT/tcp"
+        ufw limit "$SSH_PORT/tcp"
     else
         ufw allow from "$ADMIN_CIDR" to any port "$SSH_PORT" proto tcp
     fi
@@ -217,10 +232,21 @@ if [[ "$UFW_ENABLE" == "true" ]]; then
     done
     ufw --force enable
 fi
+/usr/local/sbin/vipproxy-anti-ddos
+modprobe nf_conntrack 2>/dev/null || true
+modprobe tcp_bbr 2>/dev/null || true
 {
     printf '%s\n' 'fs.file-max=2097152'
     printf '%s\n' 'net.core.somaxconn=65535'
     printf '%s\n' 'net.core.netdev_max_backlog=65535'
+    printf '%s\n' 'net.core.rmem_max=16777216'
+    printf '%s\n' 'net.core.wmem_max=16777216'
+    printf '%s\n' 'net.core.optmem_max=65536'
+    printf '%s\n' 'net.core.default_qdisc=fq'
+    printf '%s\n' 'net.ipv4.tcp_congestion_control=bbr'
+    printf '%s\n' 'net.ipv4.tcp_rmem=4096 87380 16777216'
+    printf '%s\n' 'net.ipv4.tcp_wmem=4096 65536 16777216'
+    printf '%s\n' 'net.ipv4.tcp_mem=786432 1048576 26777216'
     printf '%s\n' 'net.ipv4.tcp_max_syn_backlog=65535'
     printf '%s\n' 'net.ipv4.tcp_syncookies=1'
     printf '%s\n' 'net.ipv4.tcp_synack_retries=2'
@@ -230,6 +256,11 @@ fi
     printf '%s\n' 'net.ipv4.tcp_max_tw_buckets=1440000'
     printf '%s\n' 'net.ipv4.tcp_rfc1337=1'
     printf '%s\n' 'net.ipv4.tcp_slow_start_after_idle=0'
+    printf '%s\n' 'net.ipv4.tcp_notsent_lowat=16384'
+    printf '%s\n' 'net.ipv4.tcp_mtu_probing=1'
+    printf '%s\n' 'net.ipv4.tcp_max_orphans=262144'
+    printf '%s\n' 'net.ipv4.tcp_challenge_ack_limit=2147483647'
+    printf '%s\n' 'net.ipv4.ip_local_port_range=10240 65000'
     printf '%s\n' 'net.ipv4.icmp_echo_ignore_broadcasts=1'
     printf '%s\n' 'net.ipv4.icmp_ignore_bogus_error_responses=1'
     printf '%s\n' 'net.ipv4.conf.all.rp_filter=1'
@@ -240,6 +271,10 @@ fi
     printf '%s\n' 'net.ipv4.conf.default.accept_redirects=0'
     printf '%s\n' 'net.ipv4.conf.all.send_redirects=0'
     printf '%s\n' 'net.ipv4.conf.default.send_redirects=0'
+    printf '%s\n' 'net.netfilter.nf_conntrack_max=1048576'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_syn_recv=20'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_established=600'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_time_wait=30'
 } > /etc/sysctl.d/99-vipproxy.conf
 sysctl --system >/dev/null 2>&1 || true
 
@@ -247,11 +282,14 @@ install -d -m 0755 /etc/systemd/system/haproxy.service.d
 {
     printf '%s\n' '[Service]'
     printf '%s\n' 'LimitNOFILE=1048576'
+    printf '%s\n' 'Restart=always'
+    printf '%s\n' 'RestartSec=2'
 } > /etc/systemd/system/haproxy.service.d/limits.conf
 systemctl daemon-reload
 
 systemctl enable haproxy
 systemctl restart haproxy
+systemctl enable vipproxy-anti-ddos.service
 systemctl enable --now vipproxy-geo.timer
 systemctl --no-pager --full status haproxy
 printf '%s\n' 'vipproxy is ready'

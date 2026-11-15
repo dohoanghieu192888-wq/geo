@@ -1,0 +1,13 @@
+[Unit]
+Description=Apply VIPProxy kernel anti-DDoS rules
+After=network-online.target ufw.service
+Wants=network-online.target
+Before=haproxy.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/vipproxy-anti-ddos
+
+[Install]
+WantedBy=multi-user.target

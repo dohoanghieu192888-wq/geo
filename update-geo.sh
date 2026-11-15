@@ -21,7 +21,6 @@ valid_port() {
 . "$CONFIG_FILE"
 : "${PUBLIC_HTTP_PORT:=80}"
 : "${GAME_RULES:=}"
-: "${SSH_PORT:=22}"
 : "${GEO_ENABLE:=true}"
 : "${GEO_COUNTRY:=vn}"
 [[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
@@ -38,53 +37,6 @@ for rule in "${rules[@]}"; do
     used_ports["$public_port"]=1
 done
 
-apply_kernel_scrub() {
-    modprobe xt_recent 2>/dev/null || true
-    modprobe xt_hashlimit 2>/dev/null || true
-    iptables -N VIPPROXY_SCRUB 2>/dev/null || iptables -F VIPPROXY_SCRUB
-    iptables -A VIPPROXY_SCRUB -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
-    iptables -A VIPPROXY_SCRUB -m conntrack --ctstate INVALID -j DROP
-    iptables -A VIPPROXY_SCRUB -p tcp ! --syn -m conntrack --ctstate NEW -j DROP
-    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags ALL NONE -j DROP
-    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags ALL ALL -j DROP
-    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,FIN SYN,FIN -j DROP
-    iptables -A VIPPROXY_SCRUB -p tcp --tcp-flags SYN,RST SYN,RST -j DROP
-    iptables -A VIPPROXY_SCRUB -f -j DROP 2>/dev/null || true
-    iptables -A VIPPROXY_SCRUB -p udp -j DROP 2>/dev/null || true
-
-    local trap_ports=()
-    local common_scan_ports=(21 23 25 445 1433 3389 5900 8080 8443 8888 9001)
-    local p
-    for p in "${common_scan_ports[@]}"; do
-        [[ "$p" == "$SSH_PORT" ]] && continue
-        [[ -z "${used_ports[$p]+x}" ]] || continue
-        trap_ports+=("$p")
-    done
-    if [[ ${#trap_ports[@]} -gt 0 ]]; then
-        local trap_ports_csv
-        trap_ports_csv=$(IFS=,; echo "${trap_ports[*]}")
-        iptables -A VIPPROXY_SCRUB -m recent --name SCANNER_TRAP --rcheck --seconds 600 -j DROP 2>/dev/null || true
-        iptables -A VIPPROXY_SCRUB -p tcp -m multiport --dports "$trap_ports_csv" --syn -m recent --name SCANNER_TRAP --set -j DROP 2>/dev/null || true
-    fi
-
-    local port
-    for port in "${!used_ports[@]}"; do
-        iptables -A VIPPROXY_SCRUB -p tcp --dport "$port" --syn -m hashlimit --hashlimit-name "vpsyn_${port}" --hashlimit-mode srcip --hashlimit-above 40/sec --hashlimit-burst 80 -j DROP 2>/dev/null || true
-    done
-
-    if ! iptables -C INPUT -j VIPPROXY_SCRUB 2>/dev/null; then
-        iptables -I INPUT 1 -j VIPPROXY_SCRUB
-    fi
-
-    iptables -t raw -N VIPPROXY_RAW 2>/dev/null || iptables -t raw -F VIPPROXY_RAW 2>/dev/null || true
-    for port in "${!used_ports[@]}"; do
-        iptables -t raw -A VIPPROXY_RAW -p udp --dport "$port" -j DROP 2>/dev/null || true
-    done
-    if ! iptables -t raw -C PREROUTING -j VIPPROXY_RAW 2>/dev/null; then
-        iptables -t raw -I PREROUTING 1 -j VIPPROXY_RAW 2>/dev/null || true
-    fi
-}
-
 remove_geo_rules() {
     local port
     for port in "${!used_ports[@]}"; do
@@ -95,7 +47,6 @@ remove_geo_rules() {
 
 if [[ "$GEO_ENABLE" != "true" ]]; then
     remove_geo_rules
-    apply_kernel_scrub
     if [[ "$RELOAD_HAPROXY" == "true" ]]; then
         systemctl reload haproxy 2>/dev/null || true
     fi
@@ -105,7 +56,8 @@ fi
 install -d -m 0755 "$GEO_DIR"
 install -d -m 0755 "$CHROOT_GEO_DIR"
 TMP_GEO="$(mktemp)"
-trap 'rm -f "$TMP_GEO"' EXIT
+trap 'rm -f "$TMP_GEO" "$TMP_GEO.clean"' EXIT
+
 download_geo() {
     local url
     local urls=(
@@ -134,8 +86,9 @@ if ! download_geo; then
         fail "Cannot download or locate geo list for $GEO_COUNTRY"
     fi
 fi
-grep -Eo '^[0-9]+(\.[0-9]+){3}/[0-9]+' "$TMP_GEO" > "${TMP_GEO}.clean" || fail "No valid CIDRs found in geo list"
-mv -f "${TMP_GEO}.clean" "$TMP_GEO"
+
+grep -Eo '^[0-9]+(\.[0-9]+){3}/[0-9]+' "$TMP_GEO" > "$TMP_GEO.clean" || fail "No valid CIDRs found in geo list"
+mv -f "$TMP_GEO.clean" "$TMP_GEO"
 
 install -o root -g root -m 0644 "$TMP_GEO" "$GEO_DIR/$GEO_COUNTRY.zone"
 install -o root -g root -m 0644 "$TMP_GEO" "$CHROOT_GEO_DIR/$GEO_COUNTRY.zone"
@@ -155,7 +108,6 @@ for port in "${!used_ports[@]}"; do
         iptables -I INPUT 1 -p tcp --dport "$port" -m set ! --match-set "$GEO_SET" src -j DROP
     fi
 done
-apply_kernel_scrub
 
 if [[ "$RELOAD_HAPROXY" == "true" ]]; then
     systemctl reload haproxy
