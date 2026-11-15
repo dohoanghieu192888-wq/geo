@@ -89,6 +89,11 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y haproxy ufw curl ca-certificat
 install -d -m 0755 /etc/vipproxy
 install -d -m 0755 /run/haproxy
 install -d -m 0755 /etc/vipproxy/geo
+install -d -m 0755 /var/lib/haproxy/etc/vipproxy/geo
+if [[ -f "$ROOT_DIR/geo/$GEO_COUNTRY.zone" ]]; then
+    install -o root -g root -m 0644 "$ROOT_DIR/geo/$GEO_COUNTRY.zone" "/etc/vipproxy/geo/$GEO_COUNTRY.zone"
+    install -o root -g root -m 0644 "$ROOT_DIR/geo/$GEO_COUNTRY.zone" "/var/lib/haproxy/etc/vipproxy/geo/$GEO_COUNTRY.zone"
+fi
 install -o root -g root -m 0600 "$CONFIG_FILE" /etc/vipproxy/config.env
 install -o root -g root -m 0755 "$ROOT_DIR/update-geo.sh" /usr/local/sbin/vipproxy-geo-update
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.service" /etc/systemd/system/vipproxy-geo.service

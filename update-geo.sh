@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE=/etc/vipproxy/config.env
 GEO_DIR=/etc/vipproxy/geo
 CHROOT_GEO_DIR=/var/lib/haproxy/etc/vipproxy/geo
@@ -74,9 +75,35 @@ install -d -m 0755 "$GEO_DIR"
 install -d -m 0755 "$CHROOT_GEO_DIR"
 TMP_GEO="$(mktemp)"
 trap 'rm -f "$TMP_GEO"' EXIT
-URL="https://www.ipdeny.com/ipblocks/data/countries/${GEO_COUNTRY}.zone"
-curl --fail --silent --show-error --location --max-time 45 "$URL" -o "$TMP_GEO"
-grep -Eq '^[0-9]+(\.[0-9]+){3}/[0-9]+$' "$TMP_GEO" || fail "Invalid geo list"
+download_geo() {
+    local url
+    local urls=(
+        "https://www.ipdeny.com/ipblocks/data/countries/${GEO_COUNTRY}.zone"
+        "https://raw.githubusercontent.com/ipverse/rir-ip/master/country/${GEO_COUNTRY}/ipv4-aggregated.txt"
+        "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/geolite2_country/country_${GEO_COUNTRY}.netset"
+    )
+    for url in "${urls[@]}"; do
+        if curl --fail --silent --show-error --location --max-time 15 "$url" -o "$TMP_GEO" 2>/dev/null; then
+            if grep -Eq '^[0-9]+(\.[0-9]+){3}/[0-9]+$' "$TMP_GEO"; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+if ! download_geo; then
+    if [[ -f "$ROOT_DIR/geo/$GEO_COUNTRY.zone" ]]; then
+        cp -f "$ROOT_DIR/geo/$GEO_COUNTRY.zone" "$TMP_GEO"
+    elif [[ -f "/opt/geo_anti/geo/$GEO_COUNTRY.zone" ]]; then
+        cp -f "/opt/geo_anti/geo/$GEO_COUNTRY.zone" "$TMP_GEO"
+    elif [[ -f "$GEO_DIR/$GEO_COUNTRY.zone" ]]; then
+        cp -f "$GEO_DIR/$GEO_COUNTRY.zone" "$TMP_GEO"
+    else
+        fail "Cannot download or locate geo list for $GEO_COUNTRY"
+    fi
+fi
+
 install -o root -g root -m 0644 "$TMP_GEO" "$GEO_DIR/$GEO_COUNTRY.zone"
 install -o root -g root -m 0644 "$TMP_GEO" "$CHROOT_GEO_DIR/$GEO_COUNTRY.zone"
 
