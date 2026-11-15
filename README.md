@@ -2,7 +2,16 @@
 
 Reverse proxy cho Ubuntu 20.04 x86_64 dùng HAProxy, UFW, ipset và iptables.
 
-## Cài đặt
+## Cài đặt nhanh (Giao diện nhập tay)
+
+Chỉ cần chạy lệnh sau, hệ thống sẽ hiện từng dòng để bạn nhập IP và Port:
+
+```bash
+chmod +x setup.sh install.sh update-geo.sh
+sudo ./setup.sh
+```
+
+## Cài đặt thủ công (Qua file cấu hình)
 
 ```bash
 cp config.env.example config.env
