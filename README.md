@@ -11,6 +11,20 @@ chmod +x setup.sh install.sh update-geo.sh
 sudo ./setup.sh
 ```
 
+Script hỏi lần lượt IP web, port web; mỗi server game hỏi IP thật, port thật, rồi port public trên VPS. Nhập thêm server game bằng `y`, kết thúc bằng `n`. Không cần tự ghép chuỗi `GAME_RULES`. Nếu nhập IP vào ô port, script sẽ báo lỗi và hỏi lại trước khi cài gói. Cấu hình cũ được sao lưu thành `config.env.bak` khi xác nhận cài lại.
+
+Nếu VPS đang dùng phiên bản cũ và báo `Invalid game public port`, cập nhật rồi chạy lại:
+
+```bash
+cd /opt/geo_anti
+git pull --ff-only
+sudo bash setup.sh
+```
+
+Ví dụ: web thật `160.22.107.22` port `80`, game thật `160.22.107.22` port `25565`, port game public trên VPS `25565`. **Không nhập IP vào ô port.**
+
+IP backend phải là IP của **máy web/game thật**, không phải IP của chính VPS proxy nếu cùng port, vì sẽ tạo vòng lặp chuyển tiếp.
+
 ## Cài đặt thủ công (Qua file cấu hình)
 
 ```bash

@@ -3,85 +3,158 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$ROOT_DIR/config.env"
+umask 077
 
-clear
-echo "============================================================"
-echo "          VIPPROXY - HE THONG SETUP TU DONG               "
-echo "============================================================"
-echo ""
-
-prompt_default() {
-    local prompt="$1"
-    local default="$2"
-    local answer
-    read -r -p "$prompt [$default]: " answer
-    printf '%s' "${answer:-$default}"
+valid_ipv4() {
+    local ip="$1" octet
+    local -a octets
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+    IFS='.' read -r -a octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        (( 10#$octet <= 255 )) || return 1
+    done
 }
 
-echo "--- 1. CAU HINH WEBSITE (PORT 80 PUBLIC) ---"
-echo "Nhap IP:PORT cua may chu Web that (vi du: 10.0.0.10:80 hoac 192.168.1.100:8080)"
-read -r -p "Web Backend (IP:PORT): " web_backend_input
-while [[ -z "$web_backend_input" || ! "$web_backend_input" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}:[0-9]+$ ]]; do
-    echo "Dinh dang khong hop le! Vui long nhap dang IP:PORT (vi du: 1.2.3.4:80)"
-    read -r -p "Web Backend (IP:PORT): " web_backend_input
+valid_port() {
+    [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( 10#$1 <= 65535 ))
+}
+
+valid_limit() {
+    [[ "$1" =~ ^[0-9]{1,7}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 1000000 ))
+}
+
+valid_cidr() {
+    local ip prefix
+    [[ "$1" == "any" ]] && return 0
+    [[ "$1" == */* ]] || return 1
+    ip="${1%/*}"
+    prefix="${1##*/}"
+    valid_ipv4 "$ip" && [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && (( 10#$prefix <= 32 ))
+}
+
+ask_value() {
+    local label="$1" default="${2:-}"
+    if [[ -n "$default" ]]; then
+        read -r -p "$label [$default]: " REPLY
+        REPLY="${REPLY:-$default}"
+    else
+        read -r -p "$label: " REPLY
+    fi
+}
+
+ask_ipv4() {
+    while true; do
+        ask_value "$1"
+        valid_ipv4 "$REPLY" && return 0
+        echo "IP khong hop le. Vi du: 192.168.1.100"
+    done
+}
+
+ask_port() {
+    local label="$1" default="${2:-}"
+    while true; do
+        ask_value "$label" "$default"
+        valid_port "$REPLY" && return 0
+        echo "Port phai la so tu 1 den 65535."
+    done
+}
+
+ask_limit() {
+    local label="$1" default="$2"
+    while true; do
+        ask_value "$label" "$default"
+        valid_limit "$REPLY" && return 0
+        echo "Gia tri phai la so tu 1 den 1000000."
+    done
+}
+
+ask_yes_no() {
+    local label="$1" default="$2"
+    while true; do
+        ask_value "$label (y/n)" "$default"
+        case "$REPLY" in
+            y|Y|n|N) return 0 ;;
+            *) echo "Vui long nhap y hoac n." ;;
+        esac
+    done
+}
+
+[[ $EUID -eq 0 ]] || { echo "Vui long chay: sudo ./setup.sh" >&2; exit 1; }
+
+echo "========== VIPPROXY: CAU HINH IP VA PORT =========="
+echo "Website luon public tai port 80 cua VPS."
+ask_ipv4 "IP server web that"
+web_ip="$REPLY"
+ask_port "Port server web that" 80
+web_port="$REPLY"
+
+GAME_RULES=""
+declare -A used_ports=([80]=1)
+while true; do
+    ask_yes_no "Them server game TCP?" n
+    [[ "$REPLY" =~ ^[nN]$ ]] && break
+    ask_ipv4 "IP server game that"
+    game_ip="$REPLY"
+    ask_port "Port server game that"
+    game_backend_port="$REPLY"
+    while true; do
+        ask_port "Port game public tren VPS"
+        game_public_port="$REPLY"
+        if [[ -n "${used_ports[$game_public_port]+x}" ]]; then
+            echo "Port $game_public_port da duoc dung. Hay chon port khac."
+        else
+            used_ports["$game_public_port"]=1
+            break
+        fi
+    done
+    rule="$game_public_port:$game_ip:$game_backend_port"
+    GAME_RULES="${GAME_RULES:+$GAME_RULES,}$rule"
+    echo "Da them: VPS:$game_public_port -> $game_ip:$game_backend_port"
 done
 
-echo ""
-echo "--- 2. CAU HINH SERVER GAME (TCP PROXY) ---"
-echo "Moi quy tac co dang: PORT_PUBLIC:IP_BACKEND:PORT_BACKEND"
-echo "Neu nhieu server game, phan cach bang dau phay (,)"
-echo "Vi du: 25565:10.0.0.20:25565,27015:10.0.0.21:27015"
-echo "Neu khong dung game, co the de trong."
-read -r -p "Game Rules: " game_rules_input
+while true; do
+    ask_port "Port SSH dang su dung tren VPS" 22
+    ssh_port="$REPLY"
+    if [[ -z "${used_ports[$ssh_port]+x}" ]]; then
+        break
+    fi
+    echo "Port SSH khong duoc trung port web/game."
+done
+
+while true; do
+    ask_value "IP quan tri SSH (any hoac IP/32)" any
+    admin_cidr="$REPLY"
+    valid_cidr "$admin_cidr" && break
+    echo "CIDR khong hop le. Vi du: 113.160.10.20/32"
+done
+
+ask_yes_no "Chi cho IP Viet Nam truy cap web/game?" y
+if [[ "$REPLY" =~ ^[yY]$ ]]; then geo_enable=true; else geo_enable=false; fi
+ask_limit "So request web/IP trong 10 giay" 120
+http_rate="$REPLY"
+ask_limit "So ket noi moi game/IP trong 10 giay" 30
+game_rate="$REPLY"
+ask_limit "So ket noi web dong thoi/IP" 80
+http_max_conn="$REPLY"
+ask_limit "So ket noi game dong thoi/IP" 20
+game_max_conn="$REPLY"
 
 echo ""
-echo "--- 3. CAU HINH QUAN TRI SSH ---"
-ssh_port=$(prompt_default "Port SSH cua VPS" "22")
-echo "Chi cho phep IP quan tri SSH (de 'any' neu cho phep moi IP, hoac nhap dang IP/32)"
-admin_cidr=$(prompt_default "Admin CIDR" "any")
+echo "Web: VPS:80 -> $web_ip:$web_port"
+echo "Game: ${GAME_RULES:-khong co}"
+echo "SSH: $ssh_port, Admin: $admin_cidr, Chi VN: $geo_enable"
+echo "Web: $http_rate request/10s, $http_max_conn ket noi/IP"
+echo "Game: $game_rate ket noi moi/10s, $game_max_conn ket noi/IP"
+ask_yes_no "Xac nhan luu cau hinh va cai dat?" n
+[[ "$REPLY" =~ ^[yY]$ ]] || { echo "Da huy, khong thay doi cau hinh."; exit 0; }
 
-echo ""
-echo "--- 4. CAU HINH ANTI-DDOS & GEO-FILTER ---"
-echo "Chi cho phep IP Viet Nam truy cap (Block toan bo quoc gia khac):"
-geo_choice=$(prompt_default "Bat Geo-Filter Viet Nam? (y/n)" "y")
-if [[ "$geo_choice" =~ ^[yY]$ ]]; then
-    geo_enable="true"
-else
-    geo_enable="false"
+if [[ -f "$CONFIG_FILE" ]]; then
+    cp -p "$CONFIG_FILE" "$CONFIG_FILE.bak"
 fi
-
-http_rate=$(prompt_default "Gioi han request Web/IP trong 10s" "120")
-game_rate=$(prompt_default "Gioi han mo ket noi Game/IP trong 10s" "30")
-http_max_conn=$(prompt_default "So ket noi Web dong thoi toi da tren 1 IP" "80")
-game_max_conn=$(prompt_default "So ket noi Game dong thoi toi da tren 1 IP" "20")
-
-echo ""
-echo "============================================================"
-echo "                 THONG SO DA CHON                          "
-echo "============================================================"
-echo "Web Public Port    : 80"
-echo "Web Backend        : $web_backend_input"
-echo "Game Rules         : ${game_rules_input:-[Khong dung]}"
-echo "SSH Port           : $ssh_port"
-echo "Admin CIDR         : $admin_cidr"
-echo "Geo-filter VN      : $geo_enable"
-echo "HTTP Rate Limit    : $http_rate req/10s"
-echo "Game Conn Limit    : $game_rate conn/10s"
-echo "HTTP Max Conn/IP   : $http_max_conn"
-echo "Game Max Conn/IP   : $game_max_conn"
-echo "============================================================"
-
-read -r -p "Xac nhan cai dat ngay bay gio? (y/n) [y]: " confirm
-confirm="${confirm:-y}"
-if [[ ! "$confirm" =~ ^[yY]$ ]]; then
-    echo "Da huy cai dat."
-    exit 0
-fi
-
 cat > "$CONFIG_FILE" <<EOF
 PUBLIC_HTTP_PORT=80
-WEB_BACKEND=$web_backend_input
-GAME_RULES=$game_rules_input
+WEB_BACKEND=$web_ip:$web_port
+GAME_RULES=$GAME_RULES
 SSH_PORT=$ssh_port
 ADMIN_CIDR=$admin_cidr
 UFW_ENABLE=true
@@ -95,8 +168,5 @@ HTTP_MAX_CONN_PER_IP=$http_max_conn
 GAME_MAX_CONN_PER_IP=$game_max_conn
 EOF
 
-echo ""
-echo "Da luu cau hinh vao $CONFIG_FILE"
-echo "Dang tien hanh cai dat he thong qua install.sh..."
-chmod +x "$ROOT_DIR/install.sh" "$ROOT_DIR/update-geo.sh"
-"$ROOT_DIR/install.sh" "$CONFIG_FILE"
+printf 'Da luu %s. Dang cai dat...\n' "$CONFIG_FILE"
+bash "$ROOT_DIR/install.sh" "$CONFIG_FILE"
