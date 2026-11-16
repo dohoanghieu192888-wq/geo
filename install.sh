@@ -18,10 +18,6 @@ valid_limit() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( 1 <= 10#$1 ))
 }
 
-valid_limit0() {
-    [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 1000000 ))
-}
-
 valid_port_csv() {
     local csv="$1" port count=0
     [[ -z "$csv" ]] && return 0
@@ -92,8 +88,6 @@ set +a
 : "${MAX_GAME_CONN:=20000}"
 : "${GEO_ENABLE:=true}"
 : "${GEO_COUNTRY:=vn}"
-: "${HTTP_RATE_LIMIT:=0}"
-: "${HTTP_ERR_RATE_LIMIT:=15}"
 : "${ALLOWED_HOSTS:=}"
 : "${SYNPROXY_PORT:=}"
 : "${CONNTRACK_TCP_LOOSE:=0}"
@@ -116,8 +110,6 @@ valid_limit "$MAX_HTTP_CONN" || fail "Invalid MAX_HTTP_CONN"
 [[ "$GEO_ENABLE" == "true" || "$GEO_ENABLE" == "false" ]] || fail "Invalid GEO_ENABLE"
 [[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
 valid_limit "$MAX_GAME_CONN" || fail "Invalid MAX_GAME_CONN"
-valid_limit0 "$HTTP_RATE_LIMIT" || fail "Invalid HTTP_RATE_LIMIT"
-valid_limit0 "$HTTP_ERR_RATE_LIMIT" || fail "Invalid HTTP_ERR_RATE_LIMIT"
 valid_port_csv "$UDP_REPLY_PORTS" || fail "Invalid UDP_REPLY_PORTS"
 valid_port_csv "$ALLOW_UDP_PORTS" || fail "Invalid ALLOW_UDP_PORTS"
 valid_cidr_csv "$WAF_TRUSTED_CIDRS" || fail "Invalid WAF_TRUSTED_CIDRS"
@@ -243,14 +235,6 @@ trap 'rm -f "$TMP_CFG"' EXIT
     if [[ "$GEO_ENABLE" == "true" ]]; then
         printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
         printf '%s\n' '    http-request deny deny_status 403 unless geo_allowed'
-    fi
-    printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s)'
-    printf '%s\n' '    http-request track-sc0 src'
-    if (( HTTP_ERR_RATE_LIMIT > 0 )); then
-        printf '    http-request silent-drop if { sc_http_err_rate(0) gt %s }\n' "$HTTP_ERR_RATE_LIMIT"
-    fi
-    if (( HTTP_RATE_LIMIT > 0 )); then
-        printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
     fi
     printf '%s\n' '    http-response del-header Server'
     printf '%s\n' '    http-response del-header X-Powered-By'

@@ -19,10 +19,6 @@ valid_port() {
     [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( 10#$1 <= 65535 ))
 }
 
-valid_limit() {
-    [[ "$1" =~ ^[0-9]{1,7}$ ]] && (( 10#$1 <= 1000000 ))
-}
-
 valid_cidr() {
     local ip prefix
     [[ "$1" == "any" ]] && return 0
@@ -56,15 +52,6 @@ ask_port() {
         ask_value "$label" "$default"
         valid_port "$REPLY" && return 0
         echo "Port phai la so tu 1 den 65535."
-    done
-}
-
-ask_limit() {
-    local label="$1" default="$2"
-    while true; do
-        ask_value "$label" "$default"
-        valid_limit "$REPLY" && return 0
-        echo "Gia tri phai la so tu 0 den 1000000 (0 = khong gioi han theo IP)."
     done
 }
 
@@ -153,15 +140,12 @@ done
 
 ask_yes_no "Chi cho IP Viet Nam truy cap web/game?" y
 if [[ "$REPLY" =~ ^[yY]$ ]]; then geo_enable=true; else geo_enable=false; fi
-ask_limit "So request web/IP trong 10 giay (0 = khong gioi han)" 0
-http_rate="$REPLY"
 ask_waf
 
 echo ""
 echo "Web: VPS:80 -> $web_ip:$web_port"
 echo "Game: ${GAME_RULES:-khong co}"
 echo "SSH: $ssh_port, Admin: $admin_cidr, Chi VN: $geo_enable"
-echo "Web: $http_rate request/10s"
 echo "WAF: ${waf_cidrs:-tat}"
 ask_yes_no "Xac nhan luu cau hinh va cai dat?" n
 [[ "$REPLY" =~ ^[yY]$ ]] || { echo "Da huy, khong thay doi cau hinh."; exit 0; }
@@ -180,8 +164,6 @@ MAX_HTTP_CONN=4000
 MAX_GAME_CONN=20000
 GEO_ENABLE=$geo_enable
 GEO_COUNTRY=vn
-HTTP_RATE_LIMIT=$http_rate
-HTTP_ERR_RATE_LIMIT=15
 CONNTRACK_TCP_LOOSE=0
 UDP_REPLY_PORTS=53,123,67,68
 ALLOW_UDP_PORTS=

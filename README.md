@@ -92,8 +92,8 @@ Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ. Lớp k
    - `ipset vipproxy_geo`: Lọc IP Việt Nam ở cấp độ kernel với tốc độ tra cứu O(1), drop toàn bộ IP ngoại quốc trước khi gói tin tới HAProxy.
 
 3. **Tầng 3 - HAProxy Layer 4 (Web + Game TCP)**:
-   - HTTP dùng stick-table 500.000 IP để theo dõi `http_req_rate(10s)` và `http_err_rate(10s)`; game TCP không có stick-table, không giới hạn theo IP.
-   - Không còn bảng `abuse`/`web_conn`, không kiểm tra `conn_cur` hay `conn_rate`: người chơi sau NAT/CGNAT không bị chặn oan.
+   - Không giới hạn số request, tốc độ request hay lỗi HTTP theo IP; không dùng stick-table.
+   - Không có bảng `abuse`/`web_conn`, không kiểm tra `conn_cur` hay `conn_rate`: người chơi sau NAT/CGNAT không bị chặn oan.
    - `MAX_HTTP_CONN` và `MAX_GAME_CONN` chỉ là giới hạn tổng của HAProxy, không phải giới hạn theo IP.
    - `nbthread` bằng số CPU (tối đa 8), `tcp-smart-accept`/`tcp-smart-connect` và `timeout queue 15s`: xử lý nhiều kết nối hơn, ít syscall hơn, request vào hàng đợi quá lâu bị trả lỗi thay vì treo.
 
@@ -102,15 +102,13 @@ Hệ thống được thiết kế theo mô hình 4 tầng phòng thủ. Lớp k
    - **Kiểm soát HTTP Method**: Chỉ cho phép các phương thức chuẩn (`GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `OPTIONS`). Mọi method rác do toolkit quét đều bị `silent-drop` ngay lập tức.
    - **Bắt buộc Host Header**: Tự động drop các request không có Host header hoặc có nhiều Host header.
    - **Chống Bot Scanner**: Chặn các công cụ quét tự động (`c2-enum`, `nuclei`, `httpx`, `gobuster`, `dirbuster`, `ffuf`, `feroxbuster`, `wfuzz`, `nmap`, `sqlmap`, `nikto`, `wpscan`, `masscan`, `zgrab`, `censys`, `fwdns`, `zmap`...).
-   - **Chống Brute-force / Path Flood**: Theo dõi `http_err_rate(10s)`, ngắt kết nối nếu IP vượt `HTTP_ERR_RATE_LIMIT` lỗi (mặc định 15 lỗi/10 giây).
+   - **Không rate-limit HTTP theo IP**: request hợp lệ luôn được chuyển backend; chỉ drop request sai method, thiếu Host, path hoặc header bất thường.
    - **Chống Slowloris**: Timeout nhận request 5s, timeout client-fin 2s, request được buffer toàn bộ trước khi chuyển backend.
    - **Chặn dò path**: các đường dẫn recon phổ biến (`.env`, `.git`, `wp-login.php`, `phpmyadmin`, `cgi-bin`, `actuator`, `server-status`, `/etc/passwd`, `/vendor/phpunit`, `/_ignition`...) và path traversal `/../`, `%00` bị `silent-drop`.
    - **Chặn header/body bất thường**: nhiều `Content-Length`, Host dài quá 253 ký tự, User-Agent dài quá 512, Cookie dài quá 8 KB, Referer dài quá 2 KB, path dài quá 1024, body quá 20 MB đều bị drop.
    - **Host whitelist (tuỳ chọn)**: đặt `ALLOWED_HOSTS=example.com,www.example.com` thì request mang Host khác bị drop thẳng.
 
 ```env
-HTTP_RATE_LIMIT=0
-HTTP_ERR_RATE_LIMIT=15
 ALLOWED_HOSTS=
 MAX_HTTP_CONN=4000
 MAX_GAME_CONN=20000
@@ -122,7 +120,7 @@ WAF_TRUSTED_CIDRS=
 WAF_REAL_IP_HEADER=X-Real-IP
 ```
 
-`HTTP_RATE_LIMIT` là số request mỗi IP trong 10 giây. `HTTP_ERR_RATE_LIMIT` là số lỗi HTTP mỗi IP trong 10 giây (`0` = tắt). Giá trị **`0` = tắt giới hạn theo IP** — cần khi nhiều người dùng chung một IP public (quán net, CGNAT 4G). Các lớp khác vẫn bật: geo-filter, whitelist cổng ở kernel, syncookies, TCP backlog, chặn method/Host/path/UA.
+Không có giới hạn request, tốc độ request hay lỗi HTTP theo IP. Các lớp khác vẫn bật: geo-filter, whitelist cổng ở kernel, syncookies, TCP backlog, chặn method/Host/path/UA.
 
 Không có giới hạn số kết nối TCP đồng thời hoặc tốc độ kết nối TCP theo IP. `MAX_HTTP_CONN`/`MAX_GAME_CONN` là tổng năng lực của HAProxy, không chặn theo IP.
 
@@ -132,11 +130,9 @@ Proxy này chỉ chuyển tiếp TCP. `UDP_REPLY_PORTS` chỉ cho phép UDP repl
 
 ### Cấu hình anti-DDoS mạnh nhất trong giới hạn VPS
 
-Đây là điểm khởi đầu cho môi trường **mỗi IP public là một người dùng** (không dùng chung NAT/quán net). Giảm hoặc đặt `0` nếu người chơi đi qua CGNAT:
+Các lớp chặn gói vẫn bật mặc định. SYNPROXY là tùy chọn:
 
 ```env
-HTTP_RATE_LIMIT=100
-HTTP_ERR_RATE_LIMIT=10
 SYNPROXY_PORT=80
 CONNTRACK_TCP_LOOSE=0
 ```
@@ -167,7 +163,7 @@ WAF_REAL_IP_HEADER=X-Real-IP
 ```
 
 - `WAF_TRUSTED_CIDRS`: IP/CIDR IPv4 của WAF, cách nhau bằng dấu phẩy. Khi có giá trị, `anti-ddos.sh` tạo ipset `vipproxy_waf` và drop mọi kết nối port 80 không đến từ WAF; UFW cũng chỉ mở port 80 cho các CIDR này.
-- `WAF_REAL_IP_HEADER`: header WAF dùng để gửi IP người dùng thật. HAProxy chỉ tin header này khi kết nối đến từ `WAF_TRUSTED_CIDRS`, rồi dùng IP đó cho log và `HTTP_RATE_LIMIT`.
+- `WAF_REAL_IP_HEADER`: header WAF dùng để gửi IP người dùng thật. HAProxy chỉ tin header này khi kết nối đến từ `WAF_TRUSTED_CIDRS`, rồi dùng IP đó cho log và geo-filter.
 - Cấu hình WAF ghi đè header bằng IP thật, không forward giá trị do client gửi.
 - Nếu dùng SaaS, lấy dải IP egress do nhà cung cấp công bố. Nếu IP thay đổi, cập nhật `WAF_TRUSTED_CIDRS` và chạy lại `sudo ./install.sh config.env`.
 - WAF không bảo vệ game TCP trừ khi nó proxy được TCP; game vẫn đi trực tiếp vào VPS.
@@ -220,7 +216,7 @@ Không. Đây là giới hạn vật lý của đường truyền, không phải
 - Muốn chịu 100 Gbps phải chặn ở upstream: Cloudflare Spectrum (TCP game), dịch vụ scrubbing/anycast, anti-DDoS của nhà cung cấp (OVH VAC/Game, VNPT, Viettel, Vietnix...), hoặc nhiều proxy anycast phân tán.
 - `watchdog.sh` có thể gọi `WATCH_MITIGATION_CMD` để bật mitigation upstream hoặc đổi DNS sang IP dự phòng, nhưng nó không tạo thêm băng thông.
 
-Phần repo này làm được là giữ CPU, conntrack và socket không sập khi lưu lượng **vẫn nằm trong băng thông VPS**: drop SYN/cổng lạ/UDP rác ở bảng `raw` trước conntrack, SYNPROXY tuỳ chọn, `CONNTRACK_TCP_LOOSE=0`, không giới hạn TCP theo IP, khóa origin bằng `WAF_TRUSTED_CIDRS`, RPS chia softirq đều cho các core, conntrack 1 triệu entry với 262144 bucket, HAProxy đa luồng và stick-table HTTP.
+Phần repo này làm được là giữ CPU, conntrack và socket không sập khi lưu lượng **vẫn nằm trong băng thông VPS**: drop SYN/cổng lạ/UDP rác ở bảng `raw` trước conntrack, SYNPROXY tuỳ chọn, `CONNTRACK_TCP_LOOSE=0`, không giới hạn TCP theo IP, khóa origin bằng `WAF_TRUSTED_CIDRS`, RPS chia softirq đều cho các core, conntrack 1 triệu entry với 262144 bucket và HAProxy đa luồng.
 
 Nói ngắn gọn: **100 Gbps phải mua ở upstream; trong VPS chỉ tối ưu được đến mức đường truyền cho phép.**
 

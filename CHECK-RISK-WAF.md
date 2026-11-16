@@ -79,7 +79,7 @@ Khi `WAF_TRUSTED_CIDRS` có giá trị:
 - `anti-ddos.sh` tạo ipset `vipproxy_waf`.
 - Chain `VIPPROXY_RAW` và `VIPPROXY_SCRUB` drop mọi kết nối TCP port 80 không đến từ các CIDR này.
 - UFW chỉ mở port 80 cho các CIDR này.
-- HAProxy chỉ tin `WAF_REAL_IP_HEADER` khi kết nối đến từ WAF, sau đó dùng IP thật cho log và `HTTP_RATE_LIMIT`.
+- HAProxy chỉ tin `WAF_REAL_IP_HEADER` khi kết nối đến từ WAF, sau đó dùng IP thật cho log và geo-filter.
 - Game TCP, SSH và geo-filter không bị ảnh hưởng.
 
 ## Kiểm tra
