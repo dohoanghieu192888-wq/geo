@@ -8,6 +8,7 @@ ANTI_DDOS_BIN=/usr/local/sbin/vipproxy-anti-ddos
 : "${WATCH_INTERVAL:=10}"
 : "${WATCH_INBOUND_MBPS:=300}"
 : "${WATCH_INBOUND_PPS:=300000}"
+: "${WATCH_CONNTRACK_PCT:=85}"
 : "${WATCH_COOLDOWN:=3}"
 : "${WATCH_WEBHOOK:=}"
 : "${WATCH_MITIGATION_CMD:=}"
@@ -27,6 +28,7 @@ fail() {
 [[ "$WATCH_INTERVAL" =~ ^[0-9]+$ ]] && (( WATCH_INTERVAL >= 1 )) || fail "watchdog: invalid WATCH_INTERVAL"
 [[ "$WATCH_INBOUND_MBPS" =~ ^[0-9]+$ ]] || fail "watchdog: invalid WATCH_INBOUND_MBPS"
 [[ "$WATCH_INBOUND_PPS" =~ ^[0-9]+$ ]] || fail "watchdog: invalid WATCH_INBOUND_PPS"
+[[ "$WATCH_CONNTRACK_PCT" =~ ^[0-9]+$ ]] && (( WATCH_CONNTRACK_PCT <= 100 )) || fail "watchdog: invalid WATCH_CONNTRACK_PCT"
 [[ "$WATCH_COOLDOWN" =~ ^[0-9]+$ ]] || fail "watchdog: invalid WATCH_COOLDOWN"
 
 if [[ -z "$WATCH_IFACE" ]] && command -v ip >/dev/null 2>&1; then
@@ -49,6 +51,23 @@ read_counters() {
     return 1
 }
 
+read_conntrack() {
+    conntrack_count=0
+    conntrack_max=0
+    conntrack_pct=0
+    if [[ -r /proc/sys/net/netfilter/nf_conntrack_count ]]; then
+        conntrack_count=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || printf '0')
+    fi
+    if [[ -r /proc/sys/net/netfilter/nf_conntrack_max ]]; then
+        conntrack_max=$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || printf '0')
+    fi
+    [[ "$conntrack_count" =~ ^[0-9]+$ ]] || conntrack_count=0
+    [[ "$conntrack_max" =~ ^[0-9]+$ ]] || conntrack_max=0
+    if (( conntrack_max > 0 )); then
+        conntrack_pct=$(( conntrack_count * 100 / conntrack_max ))
+    fi
+}
+
 notify() {
     [[ -n "$WATCH_WEBHOOK" ]] || return 0
     curl -fsS -m 5 -X POST -H 'Content-Type: application/json' \
@@ -65,7 +84,7 @@ ensure_services() {
     fi
 }
 
-printf '%s\n' "watchdog: iface=${WATCH_IFACE} limit=${WATCH_INBOUND_MBPS}Mbps/${WATCH_INBOUND_PPS}pps interval=${WATCH_INTERVAL}s"
+printf '%s\n' "watchdog: iface=${WATCH_IFACE} limit=${WATCH_INBOUND_MBPS}Mbps/${WATCH_INBOUND_PPS}pps conntrack=${WATCH_CONNTRACK_PCT}% interval=${WATCH_INTERVAL}s"
 
 cycles=0
 calm=0
@@ -77,30 +96,31 @@ pps=0
 
 while :; do
     counters=$(read_counters "$WATCH_IFACE" 2>/dev/null || true)
+    read_conntrack
     if [[ -n "$counters" ]]; then
         read -r bytes packets <<< "$counters"
         if [[ -n "$prev_bytes" ]] && (( bytes >= prev_bytes )) && (( packets >= prev_packets )); then
             mbps=$(( (bytes - prev_bytes) * 8 / WATCH_INTERVAL / 1000000 ))
             pps=$(( (packets - prev_packets) / WATCH_INTERVAL ))
-            if (( mbps >= WATCH_INBOUND_MBPS || pps >= WATCH_INBOUND_PPS )); then
+            if (( mbps >= WATCH_INBOUND_MBPS || pps >= WATCH_INBOUND_PPS || (WATCH_CONNTRACK_PCT > 0 && conntrack_pct >= WATCH_CONNTRACK_PCT) )); then
                 calm=0
                 if [[ "$attack" != true ]]; then
                     attack=true
-                    printf '%s\n' "attack: ${mbps}Mbps ${pps}pps on ${WATCH_IFACE}"
-                    notify "attack: ${mbps}Mbps ${pps}pps on ${WATCH_IFACE}"
+                    printf '%s\n' "attack: ${mbps}Mbps ${pps}pps conntrack=${conntrack_count}/${conntrack_max} (${conntrack_pct}%) on ${WATCH_IFACE}"
+                    notify "attack: ${mbps}Mbps ${pps}pps conntrack=${conntrack_count}/${conntrack_max} (${conntrack_pct}%) on ${WATCH_IFACE}"
                     if [[ -n "$WATCH_MITIGATION_CMD" ]]; then
                         bash -c "$WATCH_MITIGATION_CMD" >/dev/null 2>&1 || true
                     fi
                     ensure_services
                 elif (( cycles % 30 == 0 )); then
-                    printf '%s\n' "attack ongoing: ${mbps}Mbps ${pps}pps on ${WATCH_IFACE}"
+                    printf '%s\n' "attack ongoing: ${mbps}Mbps ${pps}pps conntrack=${conntrack_count}/${conntrack_max} (${conntrack_pct}%) on ${WATCH_IFACE}"
                 fi
             elif [[ "$attack" == true ]]; then
                 calm=$((calm + 1))
                 if (( calm >= WATCH_COOLDOWN )); then
                     attack=false
-                    printf '%s\n' "normal: ${mbps}Mbps ${pps}pps on ${WATCH_IFACE}"
-                    notify "normal: ${mbps}Mbps ${pps}pps on ${WATCH_IFACE}"
+                    printf '%s\n' "normal: ${mbps}Mbps ${pps}pps conntrack=${conntrack_count}/${conntrack_max} (${conntrack_pct}%) on ${WATCH_IFACE}"
+                    notify "normal: ${mbps}Mbps ${pps}pps conntrack=${conntrack_count}/${conntrack_max} (${conntrack_pct}%) on ${WATCH_IFACE}"
                 fi
             fi
         fi

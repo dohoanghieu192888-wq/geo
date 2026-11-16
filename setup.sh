@@ -29,7 +29,7 @@ valid_cidr() {
     [[ "$1" == */* ]] || return 1
     ip="${1%/*}"
     prefix="${1##*/}"
-    valid_ipv4 "$ip" && [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && (( 10#$prefix <= 32 ))
+    valid_ipv4 "$ip" && [[ "$prefix" =~ ^[0-9]{1,2}$ ]] && (( 10#$prefix >= 1 && 10#$prefix <= 32 ))
 }
 
 ask_value() {
@@ -76,6 +76,29 @@ ask_yes_no() {
             y|Y|n|N) return 0 ;;
             *) echo "Vui long nhap y hoac n." ;;
         esac
+    done
+}
+
+ask_waf() {
+    local item ok
+    local -a items
+    while true; do
+        ask_value "IP WAF Check-Risk (rong = tat)" ""
+        [[ -z "$REPLY" ]] && { waf_cidrs=""; return 0; }
+        waf_cidrs=""
+        ok=true
+        IFS=',' read -r -a items <<< "$REPLY"
+        for item in "${items[@]}"; do
+            [[ "$item" == */* ]] || item="$item/32"
+            if valid_cidr "$item"; then
+                waf_cidrs="${waf_cidrs:+$waf_cidrs,}$item"
+            else
+                ok=false
+                break
+            fi
+        done
+        [[ "$ok" == true ]] && return 0
+        echo "IP/CIDR khong hop le."
     done
 }
 
@@ -132,19 +155,14 @@ ask_yes_no "Chi cho IP Viet Nam truy cap web/game?" y
 if [[ "$REPLY" =~ ^[yY]$ ]]; then geo_enable=true; else geo_enable=false; fi
 ask_limit "So request web/IP trong 10 giay (0 = khong gioi han)" 0
 http_rate="$REPLY"
-ask_limit "So ket noi moi game/IP trong 10 giay (0 = khong gioi han)" 0
-game_rate="$REPLY"
-ask_limit "So ket noi web dong thoi/IP (0 = khong gioi han)" 0
-http_max_conn="$REPLY"
-ask_limit "So ket noi game dong thoi/IP (0 = khong gioi han)" 0
-game_max_conn="$REPLY"
+ask_waf
 
 echo ""
 echo "Web: VPS:80 -> $web_ip:$web_port"
 echo "Game: ${GAME_RULES:-khong co}"
 echo "SSH: $ssh_port, Admin: $admin_cidr, Chi VN: $geo_enable"
-echo "Web: $http_rate request/10s, $http_max_conn ket noi/IP"
-echo "Game: $game_rate ket noi moi/10s, $game_max_conn ket noi/IP"
+echo "Web: $http_rate request/10s"
+echo "WAF: ${waf_cidrs:-tat}"
 ask_yes_no "Xac nhan luu cau hinh va cai dat?" n
 [[ "$REPLY" =~ ^[yY]$ ]] || { echo "Da huy, khong thay doi cau hinh."; exit 0; }
 
@@ -163,9 +181,12 @@ MAX_GAME_CONN=20000
 GEO_ENABLE=$geo_enable
 GEO_COUNTRY=vn
 HTTP_RATE_LIMIT=$http_rate
-GAME_CONN_RATE_LIMIT=$game_rate
-HTTP_MAX_CONN_PER_IP=$http_max_conn
-GAME_MAX_CONN_PER_IP=$game_max_conn
+HTTP_ERR_RATE_LIMIT=15
+CONNTRACK_TCP_LOOSE=0
+UDP_REPLY_PORTS=53,123,67,68
+ALLOW_UDP_PORTS=
+WAF_TRUSTED_CIDRS=$waf_cidrs
+WAF_REAL_IP_HEADER=X-Real-IP
 EOF
 
 printf 'Da luu %s. Dang cai dat...\n' "$CONFIG_FILE"

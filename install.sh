@@ -22,6 +22,17 @@ valid_limit0() {
     [[ "$1" =~ ^[0-9]+$ ]] && (( 10#$1 <= 1000000 ))
 }
 
+valid_port_csv() {
+    local csv="$1" port count=0
+    [[ -z "$csv" ]] && return 0
+    IFS=',' read -r -a items <<< "$csv"
+    for port in "${items[@]}"; do
+        valid_port "$port" || return 1
+        ((count+=1))
+        (( count <= 15 )) || return 1
+    done
+}
+
 valid_ipv4() {
     local ip="$1"
     local part
@@ -36,10 +47,32 @@ valid_ipv4() {
     [[ $count -eq 4 ]]
 }
 
+valid_cidr() {
+    local ip="${1%/*}" prefix="${1##*/}"
+    [[ "$1" == */* && "$prefix" =~ ^[0-9]{1,2}$ ]] && (( 10#$prefix >= 1 && 10#$prefix <= 32 )) || return 1
+    valid_ipv4 "$ip"
+}
+
+valid_cidr_csv() {
+    local csv="$1" cidr count=0
+    local -a items
+    [[ -z "$csv" ]] && return 0
+    IFS=',' read -r -a items <<< "$csv"
+    for cidr in "${items[@]}"; do
+        valid_cidr "$cidr" || return 1
+        ((count+=1))
+        (( count <= 32 )) || return 1
+    done
+}
+
 [[ $EUID -eq 0 ]] || fail "Run as root"
-[[ -f /etc/os-release ]] || fail "Ubuntu 20.04 is required"
+[[ -f /etc/os-release ]] || fail "Ubuntu 24.04 or 26.04 is required"
 . /etc/os-release
-[[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" == "20.04" ]] || fail "Ubuntu 20.04 is required"
+[[ "${ID:-}" == "ubuntu" ]] || fail "Ubuntu 24.04 or 26.04 is required"
+case "${VERSION_ID:-}" in
+    24.04|26.04) ;;
+    *) fail "Ubuntu 24.04 or 26.04 is required" ;;
+esac
 [[ "$(uname -m)" == "x86_64" ]] || fail "x86_64 is required"
 [[ -f "$CONFIG_FILE" ]] || fail "Missing config: $CONFIG_FILE"
 
@@ -60,10 +93,14 @@ set +a
 : "${GEO_ENABLE:=true}"
 : "${GEO_COUNTRY:=vn}"
 : "${HTTP_RATE_LIMIT:=0}"
-: "${GAME_CONN_RATE_LIMIT:=0}"
-: "${HTTP_MAX_CONN_PER_IP:=0}"
-: "${GAME_MAX_CONN_PER_IP:=0}"
+: "${HTTP_ERR_RATE_LIMIT:=15}"
 : "${ALLOWED_HOSTS:=}"
+: "${SYNPROXY_PORT:=}"
+: "${CONNTRACK_TCP_LOOSE:=0}"
+: "${UDP_REPLY_PORTS:=53,123,67,68}"
+: "${ALLOW_UDP_PORTS:=}"
+: "${WAF_TRUSTED_CIDRS:=}"
+: "${WAF_REAL_IP_HEADER:=X-Real-IP}"
 
 valid_port "$PUBLIC_HTTP_PORT" || fail "Invalid PUBLIC_HTTP_PORT"
 [[ "$PUBLIC_HTTP_PORT" == "80" ]] || fail "PUBLIC_HTTP_PORT must be 80"
@@ -79,10 +116,17 @@ valid_limit "$MAX_HTTP_CONN" || fail "Invalid MAX_HTTP_CONN"
 [[ "$GEO_ENABLE" == "true" || "$GEO_ENABLE" == "false" ]] || fail "Invalid GEO_ENABLE"
 [[ "$GEO_COUNTRY" =~ ^[a-z]{2}$ ]] || fail "Invalid GEO_COUNTRY"
 valid_limit "$MAX_GAME_CONN" || fail "Invalid MAX_GAME_CONN"
-valid_limit0 "$HTTP_MAX_CONN_PER_IP" || fail "Invalid HTTP_MAX_CONN_PER_IP"
-valid_limit0 "$GAME_MAX_CONN_PER_IP" || fail "Invalid GAME_MAX_CONN_PER_IP"
 valid_limit0 "$HTTP_RATE_LIMIT" || fail "Invalid HTTP_RATE_LIMIT"
-valid_limit0 "$GAME_CONN_RATE_LIMIT" || fail "Invalid GAME_CONN_RATE_LIMIT"
+valid_limit0 "$HTTP_ERR_RATE_LIMIT" || fail "Invalid HTTP_ERR_RATE_LIMIT"
+valid_port_csv "$UDP_REPLY_PORTS" || fail "Invalid UDP_REPLY_PORTS"
+valid_port_csv "$ALLOW_UDP_PORTS" || fail "Invalid ALLOW_UDP_PORTS"
+valid_cidr_csv "$WAF_TRUSTED_CIDRS" || fail "Invalid WAF_TRUSTED_CIDRS"
+[[ "$WAF_REAL_IP_HEADER" =~ ^[A-Za-z0-9-]+$ ]] || fail "Invalid WAF_REAL_IP_HEADER"
+[[ "$CONNTRACK_TCP_LOOSE" == "0" || "$CONNTRACK_TCP_LOOSE" == "1" ]] || fail "Invalid CONNTRACK_TCP_LOOSE"
+if [[ -n "$SYNPROXY_PORT" ]]; then
+    valid_port "$SYNPROXY_PORT" || fail "Invalid SYNPROXY_PORT"
+    CONNTRACK_TCP_LOOSE=0
+fi
 if [[ -n "$ALLOWED_HOSTS" && ! "$ALLOWED_HOSTS" =~ ^[A-Za-z0-9.*_:,-]+$ ]]; then
     fail "Invalid ALLOWED_HOSTS"
 fi
@@ -110,6 +154,14 @@ if [[ -f "$ROOT_DIR/geo/$GEO_COUNTRY.zone" ]]; then
     install -o root -g root -m 0644 "$ROOT_DIR/geo/$GEO_COUNTRY.zone" "/var/lib/haproxy/etc/vipproxy/geo/$GEO_COUNTRY.zone"
 fi
 install -o root -g root -m 0600 "$CONFIG_FILE" /etc/vipproxy/config.env
+if [[ -n "$WAF_TRUSTED_CIDRS" ]]; then
+    IFS=',' read -r -a waf_cidrs <<< "$WAF_TRUSTED_CIDRS"
+    printf '%s\n' "${waf_cidrs[@]}" > /etc/vipproxy/waf_trusted.lst
+    chmod 0644 /etc/vipproxy/waf_trusted.lst
+    install -o root -g root -m 0644 /etc/vipproxy/waf_trusted.lst /var/lib/haproxy/etc/vipproxy/waf_trusted.lst
+else
+    rm -f /etc/vipproxy/waf_trusted.lst /var/lib/haproxy/etc/vipproxy/waf_trusted.lst
+fi
 install -o root -g root -m 0755 "$ROOT_DIR/update-geo.sh" /usr/local/sbin/vipproxy-geo-update
 install -o root -g root -m 0644 "$ROOT_DIR/vipproxy-geo.service" /etc/systemd/system/vipproxy-geo.service
 install -o root -g root -m 0755 "$ROOT_DIR/anti-ddos.sh" /usr/local/sbin/vipproxy-anti-ddos
@@ -152,9 +204,6 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout queue 15s'
     printf '%s\n' '    option tcp-smart-accept'
     printf '%s\n' '    option tcp-smart-connect'
-    printf '%s\n' 'backend abuse'
-    printf '%s\n' '    stick-table type ip size 500k expire 1m store conn_rate(10s),conn_cur'
-    printf '%s\n' '    server none 127.0.0.1:1 disabled'
     printf '%s\n' 'frontend web_in'
     printf '    bind *:%s\n' "$PUBLIC_HTTP_PORT"
     printf '%s\n' '    mode http'
@@ -164,20 +213,27 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    timeout client 20s'
     printf '%s\n' '    timeout client-fin 2s'
     printf '%s\n' '    option http-buffer-request'
-    if (( HTTP_MAX_CONN_PER_IP > 0 )); then
-        printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
-        printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    if [[ -n "$WAF_TRUSTED_CIDRS" ]]; then
+        printf '%s\n' '    acl waf_trusted src -f /etc/vipproxy/waf_trusted.lst'
+        printf '    http-request set-src hdr(%s) if waf_trusted { hdr(%s) -m ip 0.0.0.0/0 }\n' "$WAF_REAL_IP_HEADER" "$WAF_REAL_IP_HEADER"
     fi
     printf '%s\n' '    acl valid_method method GET HEAD POST PUT DELETE OPTIONS'
     printf '%s\n' '    http-request silent-drop unless valid_method'
     printf '%s\n' '    acl has_host hdr_cnt(host) gt 0'
     printf '%s\n' '    http-request silent-drop unless has_host'
     printf '%s\n' '    http-request silent-drop if { req.hdr_cnt(host) gt 1 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr(host) -m len gt 253 }'
     printf '%s\n' '    http-request silent-drop if { req.hdr(user-agent) -m len gt 512 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr(cookie) -m len gt 8192 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr(referer) -m len gt 2048 }'
     printf '%s\n' '    http-request silent-drop if { path -m len gt 1024 }'
-    printf '%s\n' '    acl bad_path path_beg -i /.env /.git /.svn /.hg /.aws /.ssh /.kube /wp-login.php /wp-admin /xmlrpc.php /phpmyadmin /pma /myadmin /cgi-bin /actuator /solr /jenkins /manager/html /server-status /server-info /etc/passwd /proc/self /boaform /GponForm /setup.cgi /SDK/webLanguage'
+    printf '%s\n' '    http-request silent-drop if { path -m sub -i /../ }'
+    printf '%s\n' '    http-request silent-drop if { path -m sub -i %00 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr_cnt(content-length) gt 1 }'
+    printf '%s\n' '    http-request silent-drop if { req.hdr_val(content-length) gt 20971520 }'
+    printf '%s\n' '    acl bad_path path_beg -i /.env /.git /.svn /.hg /.aws /.ssh /.kube /.DS_Store /wp-login.php /wp-admin /xmlrpc.php /phpmyadmin /pma /myadmin /cgi-bin /actuator /solr /jenkins /manager/html /server-status /server-info /etc/passwd /proc/self /boaform /GponForm /setup.cgi /SDK/webLanguage /config.php /phpinfo.php /info.php /adminer.php /vendor/phpunit /telescope /_ignition /druid /struts'
     printf '%s\n' '    http-request silent-drop if bad_path'
-    printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns httpx gobuster dirbuster nmap c2-enum nuclei'
+    printf '%s\n' '    acl bad_scan_bots hdr_sub(User-Agent) -i sqlmap nikto wpscan masscan zgrab censys fwdns httpx gobuster dirbuster nmap c2-enum nuclei ffuf feroxbuster wfuzz dirsearch joomscan droopescan arachni acunetix netsparker openvas owasp-zap burp zmap'
     printf '%s\n' '    http-request silent-drop if bad_scan_bots'
     printf '%s\n' '    http-request silent-drop if { req.body_size gt 20971520 }'
     if [[ -n "$ALLOWED_HOSTS" ]]; then
@@ -188,11 +244,10 @@ trap 'rm -f "$TMP_CFG"' EXIT
         printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
         printf '%s\n' '    http-request deny deny_status 403 unless geo_allowed'
     fi
-    printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s),conn_cur'
+    printf '%s\n' '    stick-table type ip size 500k expire 10m store http_req_rate(10s),http_err_rate(10s)'
     printf '%s\n' '    http-request track-sc0 src'
-    printf '%s\n' '    http-request silent-drop if { sc_http_err_rate(0) gt 15 }'
-    if (( HTTP_MAX_CONN_PER_IP > 0 )); then
-        printf '    http-request silent-drop if { sc_conn_cur(0) gt %s }\n' "$HTTP_MAX_CONN_PER_IP"
+    if (( HTTP_ERR_RATE_LIMIT > 0 )); then
+        printf '    http-request silent-drop if { sc_http_err_rate(0) gt %s }\n' "$HTTP_ERR_RATE_LIMIT"
     fi
     if (( HTTP_RATE_LIMIT > 0 )); then
         printf '    http-request deny deny_status 429 if { sc_http_req_rate(0) gt %s }\n' "$HTTP_RATE_LIMIT"
@@ -200,6 +255,12 @@ trap 'rm -f "$TMP_CFG"' EXIT
     printf '%s\n' '    http-response del-header Server'
     printf '%s\n' '    http-response del-header X-Powered-By'
     printf '%s\n' '    http-response del-header X-AspNet-Version'
+    printf '%s\n' '    http-response del-header X-Varnish'
+    printf '%s\n' '    http-response del-header Via'
+    printf '%s\n' '    http-response del-header X-Cache'
+    printf '%s\n' '    http-response del-header X-Backend-Server'
+    printf '%s\n' '    http-response del-header X-Runtime'
+    printf '%s\n' '    http-response del-header X-Debug-Token'
     printf '%s\n' '    http-request del-header Proxy'
     printf '%s\n' '    http-request set-header X-Real-IP %[src]'
     printf '%s\n' '    http-request set-header X-Forwarded-For %[src]'
@@ -229,16 +290,6 @@ trap 'rm -f "$TMP_CFG"' EXIT
             printf '    acl geo_allowed src -f %s\n' "$GEO_FILE"
             printf '%s\n' '    tcp-request connection reject unless geo_allowed'
         fi
-        printf '%s\n' '    stick-table type ip size 500k expire 10m store conn_rate(10s),conn_cur'
-        printf '%s\n' '    tcp-request connection track-sc0 src'
-        if (( GAME_MAX_CONN_PER_IP > 0 )); then
-            printf '%s\n' '    tcp-request connection track-sc2 src table abuse'
-            printf '    tcp-request connection reject if { sc_conn_cur(2) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
-            printf '    tcp-request connection reject if { sc_conn_cur(0) gt %s }\n' "$GAME_MAX_CONN_PER_IP"
-        fi
-        if (( GAME_CONN_RATE_LIMIT > 0 )); then
-            printf '    tcp-request connection reject if { sc_conn_rate(0) gt %s }\n' "$GAME_CONN_RATE_LIMIT"
-        fi
         printf '    maxconn %s\n' "$MAX_GAME_CONN"
         printf '    default_backend game_backend_%s\n' "$public_port"
         printf 'backend game_backend_%s\n' "$public_port"
@@ -247,6 +298,13 @@ trap 'rm -f "$TMP_CFG"' EXIT
         printf '    server game1 %s:%s check\n' "$backend_ip" "$backend_port"
     done
 } > "$TMP_CFG"
+
+if [[ -n "${used_ports[$SSH_PORT]+x}" ]]; then
+    fail "SSH_PORT must not be a web/game port"
+fi
+if [[ -n "$SYNPROXY_PORT" && -z "${used_ports[$SYNPROXY_PORT]+x}" ]]; then
+    fail "SYNPROXY_PORT must be the web port or a game public port"
+fi
 
 haproxy -c -f "$TMP_CFG"
 install -o root -g root -m 0644 "$TMP_CFG" /etc/haproxy/haproxy.cfg
@@ -259,7 +317,15 @@ if [[ "$UFW_ENABLE" == "true" ]]; then
     else
         ufw allow from "$ADMIN_CIDR" to any port "$SSH_PORT" proto tcp
     fi
-    ufw allow "$PUBLIC_HTTP_PORT/tcp"
+    if [[ -n "$WAF_TRUSTED_CIDRS" ]]; then
+        ufw --force delete allow "$PUBLIC_HTTP_PORT/tcp" 2>/dev/null || true
+        IFS=',' read -r -a waf_cidrs <<< "$WAF_TRUSTED_CIDRS"
+        for cidr in "${waf_cidrs[@]}"; do
+            ufw allow from "$cidr" to any port "$PUBLIC_HTTP_PORT" proto tcp
+        done
+    else
+        ufw allow "$PUBLIC_HTTP_PORT/tcp"
+    fi
     IFS=',' read -r -a rules <<< "$GAME_RULES"
     for rule in "${rules[@]}"; do
         [[ -z "$rule" ]] && continue
@@ -273,8 +339,11 @@ modprobe nf_conntrack 2>/dev/null || true
 modprobe tcp_bbr 2>/dev/null || true
 {
     printf '%s\n' 'fs.file-max=2097152'
+    printf '%s\n' 'fs.nr_open=2097152'
     printf '%s\n' 'net.core.somaxconn=65535'
-    printf '%s\n' 'net.core.netdev_max_backlog=65535'
+    printf '%s\n' 'net.core.netdev_max_backlog=250000'
+    printf '%s\n' 'net.core.netdev_budget=600'
+    printf '%s\n' 'net.core.netdev_budget_usecs=8000'
     printf '%s\n' 'net.core.rmem_max=16777216'
     printf '%s\n' 'net.core.wmem_max=16777216'
     printf '%s\n' 'net.core.optmem_max=65536'
@@ -296,7 +365,11 @@ modprobe tcp_bbr 2>/dev/null || true
     printf '%s\n' 'net.ipv4.tcp_mtu_probing=1'
     printf '%s\n' 'net.ipv4.tcp_max_orphans=262144'
     printf '%s\n' 'net.ipv4.tcp_challenge_ack_limit=2147483647'
+    printf '%s\n' 'net.ipv4.tcp_abort_on_overflow=0'
     printf '%s\n' 'net.ipv4.ip_local_port_range=10240 65000'
+    printf '%s\n' 'net.ipv4.ipfrag_high_thresh=4194304'
+    printf '%s\n' 'net.ipv4.ipfrag_low_thresh=3145728'
+    printf '%s\n' 'net.ipv4.ipfrag_time=15'
     printf '%s\n' 'net.ipv4.icmp_echo_ignore_broadcasts=1'
     printf '%s\n' 'net.ipv4.icmp_ignore_bogus_error_responses=1'
     printf '%s\n' 'net.ipv4.conf.all.rp_filter=1'
@@ -305,14 +378,34 @@ modprobe tcp_bbr 2>/dev/null || true
     printf '%s\n' 'net.ipv4.conf.default.accept_source_route=0'
     printf '%s\n' 'net.ipv4.conf.all.accept_redirects=0'
     printf '%s\n' 'net.ipv4.conf.default.accept_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.all.secure_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.default.secure_redirects=0'
     printf '%s\n' 'net.ipv4.conf.all.send_redirects=0'
     printf '%s\n' 'net.ipv4.conf.default.send_redirects=0'
+    printf '%s\n' 'net.ipv4.conf.all.log_martians=0'
+    printf '%s\n' 'net.ipv4.conf.default.log_martians=0'
+    printf '%s\n' 'net.ipv4.neigh.default.gc_thresh1=1024'
+    printf '%s\n' 'net.ipv4.neigh.default.gc_thresh2=4096'
+    printf '%s\n' 'net.ipv4.neigh.default.gc_thresh3=8192'
+    printf '%s\n' 'net.ipv4.neigh.default.gc_stale_time=120'
     printf '%s\n' 'net.netfilter.nf_conntrack_max=1048576'
     printf '%s\n' 'net.netfilter.nf_conntrack_buckets=262144'
-    printf '%s\n' 'net.core.rps_sock_flow_entries=32768'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_be_liberal=0'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_syn_sent=30'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_syn_recv=20'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_established=600'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_fin_wait=30'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_close_wait=30'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_last_ack=30'
     printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_time_wait=30'
+    printf '%s\n' 'net.netfilter.nf_conntrack_tcp_timeout_close=10'
+    printf '%s\n' 'net.netfilter.nf_conntrack_udp_timeout=30'
+    printf '%s\n' 'net.netfilter.nf_conntrack_udp_timeout_stream=120'
+    printf '%s\n' 'net.netfilter.nf_conntrack_icmp_timeout=10'
+    printf '%s\n' 'net.netfilter.nf_conntrack_generic_timeout=60'
+    printf '%s\n' 'net.netfilter.nf_conntrack_log_invalid=0'
+    printf 'net.netfilter.nf_conntrack_tcp_loose=%s\n' "$CONNTRACK_TCP_LOOSE"
+    printf '%s\n' 'net.core.rps_sock_flow_entries=32768'
 } > /etc/sysctl.d/99-vipproxy.conf
 sysctl --system >/dev/null 2>&1 || true
 
